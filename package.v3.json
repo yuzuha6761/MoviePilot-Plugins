@@ -7,7 +7,7 @@
     "author": "yuzuha6761",
     "level": 1,
     "order": 50,
-    "system_version": ">=3.0.0",
+    "system_version": ">=3.1.4",
     "history": {
       "v0.2.3": "新增 Transmission 双向路径映射，支持与 qBittorrent 混合多选；按下载器类型检查宿主契约并管理启停恢复。",
       "v0.2.2": "路径匹配失败时显示下载器、实际路径及配置前缀，补充本地与 SMB 前缀填写提示。",
