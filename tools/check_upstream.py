@@ -103,6 +103,19 @@ class UpstreamTests(unittest.TestCase):
         self.module.update_torrent("hash", save_path="smb:/中文 Movie")
         self.assertEqual(self.sent[1]["location"], "E:/Downloads/中文 Movie")
 
+    def test_mismatched_storage_type_reports_path_before_sending_to_qb(self):
+        for action in (
+            lambda: self.module.download("magnet:?xt=urn:btih:test", Path("/Movie"), ""),
+            lambda: self.module.update_torrent("hash", save_path="/Movie"),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                action()
+            message = str(raised.exception)
+            self.assertIn("下载器 'Windows qB'", message)
+            self.assertIn("待匹配路径='/Movie'", message)
+            self.assertIn("已配置前缀=['smb:/']", message)
+            self.assertEqual(self.sent, [])
+
     def test_original_methods_with_backslash_drive_root(self):
         self.adapter.stop()
         config = self.runtime.RuntimeConfig.from_dict({

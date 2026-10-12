@@ -49,7 +49,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("转换后路径前缀", text)
         self.assertIn("/downloads", text)
         self.assertNotIn("存储路径", text)
-        self.assertNotIn("SMB", text)
+        self.assertIn("smb:/downloads", text)
         self.assertIn("添加映射", text)
         self.assertIn("删除映射", text)
         self.assertIn("所选下载器共用", text)

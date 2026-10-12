@@ -135,6 +135,21 @@ class RuntimeTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 self.module().normalize_path(Path(path), None)
 
+    def test_unmapped_errors_include_downloader_path_and_expected_prefix(self):
+        for name in (None, "Windows qB"):
+            with self.subTest(name=name), self.assertRaises(ValueError) as raised:
+                self.module().normalize_path(Path("/downloads/Movie"), name)
+            message = str(raised.exception)
+            self.assertIn("下载器 'Windows qB'", message)
+            self.assertIn("下发路径未匹配转换后路径前缀", message)
+            self.assertIn("待匹配路径='/downloads/Movie'", message)
+            self.assertIn("已配置前缀=['smb:/']", message)
+        with self.assertRaises(ValueError) as raised:
+            self.module().normalize_return_path(Path("F:/Temp/Movie"), None)
+        self.assertIn("返回路径未匹配转换前路径前缀", str(raised.exception))
+        self.assertIn("待匹配路径='F:/Temp/Movie'", str(raised.exception))
+        self.assertIn("已配置前缀=['E:/Downloads']", str(raised.exception))
+
     def test_temp_directory_and_multi_share(self):
         self.adapter.stop()
         config = self.runtime.RuntimeConfig.from_dict({

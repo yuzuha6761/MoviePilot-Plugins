@@ -112,7 +112,9 @@ class RuntimeConfig:
             if result is not None:
                 return result
         direction = "返回路径未匹配转换前路径前缀" if returning else "下发路径未匹配转换后路径前缀"
-        raise ValueError(f"{direction}，请补充对应映射")
+        prefixes = [rule.windows_root if returning else rule.storage_root for rule in self.mappings]
+        raise ValueError(f"{direction}：待匹配路径={value!r}，已配置前缀={prefixes!r}。"
+                         "请核对目录前缀和路径类型（本地 / 或 local:/、SMB smb:/）")
 
 
 _MISSING = object()
@@ -167,7 +169,10 @@ class RuntimeAdapter:
                 if self._active:
                     selected = downloader or module.get_default_config_name()
                     if selected in self.config.downloaders:
-                        return self.config.convert(path, returning=returning)
+                        try:
+                            return self.config.convert(path, returning=returning)
+                        except ValueError as error:
+                            raise ValueError(f"下载器 {selected!r}：{error}") from error
             return original(module, path, downloader)
         setattr(wrapped, _OWNER, self)
         return wrapped

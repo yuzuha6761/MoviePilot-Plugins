@@ -24,7 +24,7 @@ class WindowsQbSmb(_PluginBase):
     plugin_name = "下载器路径映射"
     plugin_desc = "将 Windows qBittorrent 返回路径转换为 Linux 风格，并在下载下发、修改保存位置时反向转换，支持多下载器和多条前缀映射。"
     plugin_icon = ""
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.2"
     plugin_author = "Local"
     plugin_config_prefix = "windowsqbsmb_"
     plugin_order = 50
@@ -124,7 +124,8 @@ class WindowsQbSmb(_PluginBase):
         for key, label, hint in [
             ("windows_root", "转换前路径前缀",
              r"例如 E:\qBittorrent_download 或 F:\Incomplete；支持反斜杠、正斜杠及混用"),
-            ("storage_root", "转换后路径前缀", "例如 /downloads 或 /incomplete；使用正斜杠"),
+            ("storage_root", "转换后路径前缀",
+             "本地例如 /downloads；SMB 使用 smb:/downloads，须与下发路径类型一致"),
         ]:
             content.append({
                 "component": "VTextField",
