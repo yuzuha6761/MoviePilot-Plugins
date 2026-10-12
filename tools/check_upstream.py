@@ -86,8 +86,12 @@ class UpstreamTests(unittest.TestCase):
                        if isinstance(n, ast.Assign) and any(
                            isinstance(t, ast.Name) and t.id == "APP_VERSION" for t in n.targets))
         host = self.runtime.HostBindings(version, self.module_class, tuple(self.rows))
-        config = self.runtime.RuntimeConfig.from_dict({"downloader": "Windows qB",
-                    "windows_root": "E:/Downloads", "smb_root": "smb:/"})
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/"},
+            ],
+        })
         self.adapter = self.runtime.RuntimeAdapter(config, resolver=lambda: host)
         self.addCleanup(self.adapter.stop)
         self.adapter.start()
@@ -99,10 +103,34 @@ class UpstreamTests(unittest.TestCase):
         self.module.update_torrent("hash", save_path="smb:/中文 Movie")
         self.assertEqual(self.sent[1]["location"], "E:/Downloads/中文 Movie")
 
+    def test_original_methods_with_backslash_drive_root(self):
+        self.adapter.stop()
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [{"windows_root": "E:\\", "storage_root": "/disk"}],
+        })
+        self.adapter = self.runtime.RuntimeAdapter(config, resolver=self.adapter._resolver)
+        self.addCleanup(self.adapter.stop)
+        self.adapter.start()
+        self.module.download("magnet:?xt=urn:btih:test", Path("/disk"), "")
+        self.assertEqual(self.sent[-1]["download_dir"], "E:/")
+        self.module.update_torrent("hash", save_path="/disk/中文 Movie")
+        self.assertEqual(self.sent[-1]["location"], "E:/中文 Movie")
+        for root in ("E:/", "E:\\"):
+            self.rows["Windows qB"] = [{"name": "Movie", "content_path": r"E:\Movie\A.mkv",
+                                       "save_path": root, "state": "uploading"}]
+            task = self.module.list_torrents(downloader="Windows qB")[0]
+            self.assertEqual(task.save_path, "/disk")
+            self.assertEqual(task.content_path, "/disk/Movie/A.mkv")
+
     def test_original_methods_with_local_storage(self):
         self.adapter.stop()
-        config = self.runtime.RuntimeConfig.from_dict({"downloader": "Windows qB",
-            "windows_root": "E:/Downloads", "smb_root": "local:/downloads"})
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "local:/downloads"},
+            ],
+        })
         self.adapter = self.runtime.RuntimeAdapter(config, resolver=self.adapter._resolver)
         self.addCleanup(self.adapter.stop)
         self.adapter.start()

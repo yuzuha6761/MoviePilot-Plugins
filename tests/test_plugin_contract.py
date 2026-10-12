@@ -45,9 +45,11 @@ class PluginContractTests(unittest.TestCase):
         self.assertNotIn("实验版", text)
         self.assertNotIn("方法契约", text)
         self.assertIn("windows_root", text)
-        self.assertIn("MoviePilot 存储路径", text)
-        self.assertIn("local:/downloads", text)
-        self.assertNotIn("必须选择 SMB", text)
+        self.assertIn("转换前路径前缀", text)
+        self.assertIn("转换后路径前缀", text)
+        self.assertIn("/downloads", text)
+        self.assertNotIn("存储路径", text)
+        self.assertNotIn("SMB", text)
         self.assertIn("添加映射", text)
         self.assertIn("删除映射", text)
         self.assertIn("所选下载器共用", text)
@@ -76,28 +78,19 @@ class PluginContractTests(unittest.TestCase):
             form, _ = self.plugin.get_form()
         self.assertIn("下载器列表读取失败", json.dumps(form, ensure_ascii=False))
 
-    def test_legacy_values_are_visible_without_writing_configuration(self):
-        old = {"enabled": False, "downloader": "Windows qB",
-               "windows_root": "E:/Downloads", "smb_root": "smb:/downloads",
-               "windows_temp_root": "F:/Temp", "smb_temp_root": "/temp"}
-        self.plugin.init_plugin(old)
-        _, defaults = self.plugin.get_form()
-        # 与宿主 API 一样，将持久化配置覆盖到表单默认值上。
-        merged = {**defaults, **old}
-        self.assertEqual(merged["downloaders"], ["Windows qB"])
-        self.assertEqual(merged["mappings"], [
-            {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+    def test_current_configuration_reopens_without_writing_configuration(self):
+        config = {"enabled": False, "downloaders": ["Windows qB"], "mappings": [
+            {"windows_root": "E:/Downloads", "storage_root": "/downloads"},
             {"windows_root": "F:/Temp", "storage_root": "/temp"},
-        ])
-        self.assertEqual(self.plugin._config, old)
-
-    def test_new_config_reopens_without_restoring_removed_legacy_values(self):
-        config = {"downloader": "Old", "windows_root": "E:/Old", "smb_root": "smb:/",
-                  "downloaders": [], "mappings": [], "enabled": False}
+        ]}
         self.plugin.init_plugin(config)
         _, defaults = self.plugin.get_form()
-        self.assertEqual(defaults["downloaders"], [])
-        self.assertEqual(defaults["mappings"], [])
+        # 与宿主 API 一样，将持久化配置覆盖到表单默认值上。
+        merged = {**defaults, **config}
+        self.assertEqual(merged["downloaders"], config["downloaders"])
+        self.assertEqual(merged["mappings"], config["mappings"])
+        self.assertEqual(self.plugin._config, config)
+
 
     def test_disabled_does_not_resolve_host(self):
         with patch.object(self.module, "RuntimeAdapter") as adapter:
@@ -105,8 +98,13 @@ class PluginContractTests(unittest.TestCase):
             adapter.assert_not_called()
 
     def test_reinitialize_stops_previous_and_scheduler_failure_disables(self):
-        config = {"enabled": True, "downloader": "Windows qB",
-                  "windows_root": "E:/Downloads", "smb_root": "smb:/"}
+        config = {
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/"},
+            ],
+            "enabled": True,
+        }
         with patch.object(self.module, "RuntimeAdapter") as factory:
             first = factory.return_value
             self.plugin.init_plugin(config)

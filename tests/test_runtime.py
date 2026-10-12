@@ -26,7 +26,11 @@ class RuntimeTests(unittest.TestCase):
         plugin = self.enterContext(load_plugin())
         self.runtime = __import__(plugin.__name__ + ".runtime", fromlist=["RuntimeAdapter"])
         self.config = self.runtime.RuntimeConfig.from_dict({
-            "downloader": "Windows qB", "windows_root": "E:/Downloads", "smb_root": "smb:/"})
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/"},
+            ],
+        })
         self.host_class = type("QbModule", (HostPaths,), {})
         self.host = self.runtime.HostBindings("v3.1.4", self.host_class, ("Windows qB", "Linux qB"))
         self.digests = {n: self.runtime.source_digest(getattr(HostPaths, n)) for n in
@@ -120,14 +124,8 @@ class RuntimeTests(unittest.TestCase):
                       {"mappings": [{"windows_root": "F:/Temp"}]},
                       {"mappings": [{"windows_root": "", "storage_root": ""}]}]:
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                self.runtime.RuntimeConfig.from_dict({**base, **extra,
-                    "downloader": "Legacy", "windows_root": "E:/Old", "smb_root": "smb:/"})
+                self.runtime.RuntimeConfig.from_dict({**base, **extra})
 
-    def test_legacy_and_new_configuration_convert_identically(self):
-        self.assertEqual(self.config, self.runtime.RuntimeConfig.from_dict({
-            "downloaders": ["Windows qB"],
-            "mappings": [{"windows_root": "E:/Downloads", "storage_root": "smb:/"}],
-        }))
 
     def test_unmapped_or_invalid_never_falls_back_to_local(self):
         for path in ["F:/Temp/Movie", "E:/Downloads2/Movie", "E:/Downloads/../Movie", "/linux"]:
@@ -139,9 +137,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_temp_directory_and_multi_share(self):
         self.adapter.stop()
-        config = self.runtime.RuntimeConfig.from_dict({"downloader": "Windows qB",
-            "windows_root": "E:/Downloads", "smb_root": "smb:/downloads",
-            "windows_temp_root": "F:/Incomplete", "smb_temp_root": "smb:/temp"})
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+                {"windows_root": "F:/Incomplete", "storage_root": "smb:/temp"},
+            ],
+        })
         self.make_adapter(config).start()
         module = self.module()
         self.assertEqual(module.normalize_return_path(Path(r"F:\Incomplete\中文 Movie\A.mkv"), None),
@@ -150,18 +152,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(module.normalize_return_path(Path("E:/Downloads"), None), "smb:/downloads")
 
     def test_temp_rule_requires_pair_and_no_overlap(self):
-        base = {"downloader": "Windows qB", "windows_root": "E:/Downloads", "smb_root": "smb:/"}
-        for extra in [{"windows_temp_root": "F:/Temp"},
-                      {"windows_temp_root": "F:/Temp", "smb_temp_root": "smb:/temp"},
-                      {"windows_temp_root": "E:/Downloads/temp", "smb_temp_root": "smb:/other"}]:
+        primary = {"windows_root": "E:/Downloads", "storage_root": "smb:/"}
+        for extra in [{"windows_root": "F:/Temp"},
+                      {"windows_root": "F:/Temp", "storage_root": "smb:/temp"},
+                      {"windows_root": "E:/Downloads/temp", "storage_root": "smb:/other"}]:
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                self.runtime.RuntimeConfig.from_dict({**base, **extra})
+                self.runtime.RuntimeConfig.from_dict({
+                    "downloaders": ["Windows qB"], "mappings": [primary, extra]})
 
     def test_local_runtime_and_temp_mapping_without_filesystem_queries(self):
         self.adapter.stop()
-        config = self.runtime.RuntimeConfig.from_dict({"downloader": "Windows qB",
-            "windows_root": "E:/Downloads", "smb_root": "/downloads",
-            "windows_temp_root": "F:/Temp", "smb_temp_root": "local:/incomplete"})
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "/downloads"},
+                {"windows_root": "F:/Temp", "storage_root": "local:/incomplete"},
+            ],
+        })
         self.make_adapter(config).start()
         with patch.object(Path, "exists", side_effect=AssertionError("不应检查路径")), \
                 patch.object(Path, "stat", side_effect=AssertionError("不应读取元数据")):
@@ -176,17 +183,48 @@ class RuntimeTests(unittest.TestCase):
                 module.normalize_path(Path("/Downloads/Movie"), None)
 
     def test_local_scheme_root_survives_posix_path(self):
-        config = self.runtime.RuntimeConfig.from_dict({"downloader": "Windows qB",
-            "windows_root": "E:/Downloads", "smb_root": "local:/"})
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "local:/"},
+            ],
+        })
         self.assertEqual(config.convert(Path("local:/"), returning=False), "E:/Downloads")
         self.assertEqual(config.convert(Path("E:/Downloads"), returning=True), "/")
 
+    def test_drive_root_survives_posix_path_in_both_directions(self):
+        for root in ("E:/", "E:\\"):
+            for prefix, output in (("/disk", "/disk"), ("local:/", "/"), ("smb:/", "smb:/")):
+                with self.subTest(root=root, prefix=prefix):
+                    config = self.runtime.RuntimeConfig.from_dict({
+                        "downloaders": ["Windows qB"],
+                        "mappings": [{"windows_root": root, "storage_root": prefix}],
+                    })
+                    for returned in (Path("E:/"), Path("e:/"), Path("E:\\")):
+                        self.assertEqual(config.convert(returned), output)
+                    self.assertEqual(config.convert(Path(prefix), returning=False), "E:/")
+                    for invalid in ("E:", Path("F:/")):
+                        with self.assertRaises(ValueError):
+                            config.convert(invalid)
+
+    def test_shared_output_prefix_is_rejected_as_reverse_ambiguous(self):
+        for prefix in ("/downloads", "/downloads/temp", "local:/downloads"):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, "映射重叠"):
+                self.runtime.RuntimeConfig.from_dict({"downloaders": ["Windows qB"], "mappings": [
+                    {"windows_root": "E:/Downloads", "storage_root": "/downloads"},
+                    {"windows_root": "F:/Downloads", "storage_root": prefix},
+                ]})
+
     def test_local_aliases_overlap_but_different_storage_schemes_do_not(self):
-        base = {"downloader": "Windows qB", "windows_root": "E:/Downloads",
-                "smb_root": "/downloads", "windows_temp_root": "F:/Temp"}
+        def config_with(prefix):
+            return self.runtime.RuntimeConfig.from_dict({
+                "downloaders": ["Windows qB"], "mappings": [
+                    {"windows_root": "E:/Downloads", "storage_root": "/downloads"},
+                    {"windows_root": "F:/Temp", "storage_root": prefix},
+                ]})
         with self.assertRaises(ValueError):
-            self.runtime.RuntimeConfig.from_dict({**base, "smb_temp_root": "local:/downloads/temp"})
-        config = self.runtime.RuntimeConfig.from_dict({**base, "smb_temp_root": "smb:/downloads"})
+            config_with("local:/downloads/temp")
+        config = config_with("smb:/downloads")
         self.assertEqual(config.convert(Path("smb:/downloads/Movie"), returning=False), "F:/Temp/Movie")
         self.assertEqual(config.convert(Path("/downloads/Movie"), returning=False), "E:/Downloads/Movie")
 

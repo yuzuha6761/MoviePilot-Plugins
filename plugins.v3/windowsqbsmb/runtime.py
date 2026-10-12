@@ -60,23 +60,6 @@ def resolve_host():
     return HostBindings(get_app_version(), QbittorrentModule, get_downloader_names())
 
 
-def migrate_config(config):
-    """兼容旧单下载器、主目录及临时目录配置；显式空列表不回退旧值。"""
-    result = dict(config or {})
-    if "downloaders" not in result:
-        name = str(result.get("downloader") or "").strip()
-        result["downloaders"] = [name] if name else []
-    if "mappings" not in result:
-        result["mappings"] = []
-        for windows_key, storage_key in (("windows_root", "smb_root"),
-                                         ("windows_temp_root", "smb_temp_root")):
-            windows = str(result.get(windows_key) or "").strip()
-            storage = str(result.get(storage_key) or "").strip()
-            if windows or storage:
-                result["mappings"].append({"windows_root": windows, "storage_root": storage})
-    return result
-
-
 @dataclass(frozen=True)
 class RuntimeConfig:
     downloaders: tuple[str, ...]
@@ -84,13 +67,12 @@ class RuntimeConfig:
 
     @classmethod
     def from_dict(cls, config):
-        config = migrate_config(config)
-        names = config["downloaders"]
+        names = config.get("downloaders")
         if (not isinstance(names, list) or not names
                 or any(not isinstance(name, str) or not name.strip() for name in names)):
             raise ValueError("请选择至少一个已启用的 qBittorrent 下载器")
         names = tuple(dict.fromkeys(name.strip() for name in names))
-        entries = config["mappings"]
+        entries = config.get("mappings")
         if not isinstance(entries, list) or not entries:
             raise ValueError("请添加至少一条路径映射")
         rules = []
@@ -99,37 +81,38 @@ class RuntimeConfig:
                 raise ValueError(f"第 {index} 条映射格式不正确")
             windows, storage = entry.get("windows_root"), entry.get("storage_root")
             if not isinstance(windows, str) or not isinstance(storage, str):
-                raise ValueError(f"第 {index} 条映射需填写 Windows 和存储路径")
+                raise ValueError(f"第 {index} 条映射需填写转换前、后的路径前缀")
             try:
                 rules.append(PathMapping(windows.strip(), storage.strip()))
             except ValueError as error:
                 raise ValueError(f"第 {index} 条映射：{error}") from error
-        # 双向规则不允许重叠，否则无法保证往返一致。
+        # 两侧前缀均不能重叠，避免反向转换无法唯一确定 Windows 路径。
         for index, a in enumerate(rules):
             for other_index, b in enumerate(rules[index + 1:], index + 1):
-                if (a.to_storage(b.windows_root) is not None
-                        or b.to_storage(a.windows_root) is not None
+                if (a.convert(b.windows_root) is not None
+                        or b.convert(a.windows_root) is not None
                         or a.to_windows(b.storage_root) is not None
                         or b.to_windows(a.storage_root) is not None):
                     raise ValueError(f"第 {index + 1}、{other_index + 1} 条映射重叠；"
-                                     "根目录已覆盖的子目录无需单独配置")
+                                     "转换前、后路径前缀均不能重复或互相包含")
         return cls(names, tuple(rules))
 
-    def convert(self, path, *, returning):
+    def convert(self, path, *, returning=True):
         value = str(path)
-        # POSIX Path 会把 smb:/、local:/ 的尾斜杠去掉；恢复已知协议根。
-        # Windows 盘符根同样会变成 E:，只在显式配置了该盘符根时恢复。
+        # POSIX Path 会移除 URI 根和盘符根的尾斜杠，按转换方向恢复。
         if isinstance(path, PurePath):
             if not returning and value in {"smb:", "local:"}:
                 value += "/"
-            elif returning and any(value.casefold() + "/" == rule.windows_root.casefold()
-                                   for rule in self.mappings):
+            elif returning and any(
+                    value.casefold() + "/" == rule.windows_root.replace("\\", "/").casefold()
+                    for rule in self.mappings):
                 value += "/"
         for rule in self.mappings:
-            result = rule.to_storage(value) if returning else rule.to_windows(value)
+            result = rule.convert(value) if returning else rule.to_windows(value)
             if result is not None:
                 return result
-        raise ValueError("路径不在 下载器路径映射范围内，请检查保存目录或临时目录")
+        direction = "返回路径未匹配转换前路径前缀" if returning else "下发路径未匹配转换后路径前缀"
+        raise ValueError(f"{direction}，请补充对应映射")
 
 
 _MISSING = object()
@@ -138,7 +121,7 @@ _OWNER = "_windowsqbsmb_runtime_owner"
 
 
 class RuntimeAdapter:
-    """只覆盖 qBittorrent 模块的两个转换入口，其他下载器仍调用原方法。
+    """覆盖 qBittorrent 的下发和返回路径入口，其他下载器仍调用原方法。
 
     配置重载保留同一个模块类，包装自动作用于新实例。Python 类重载时，
     refresh 显式重新核对契约并迁移包装。卸载后被第三方保留的旧包装只透传。
@@ -163,7 +146,7 @@ class RuntimeAdapter:
             if getattr(method, _OWNER, None) is self:
                 method = method.__wrapped__
             elif getattr(method, _OWNER, None) is not None:
-                raise CompatibilityError(f"{name} 已由另一个 下载器路径映射插件实例接管")
+                raise CompatibilityError(f"{name} 已由另一个下载器路径映射插件实例接管")
             try:
                 if hasattr(method, "__wrapped__") or source_digest(method) != digest:
                     raise CompatibilityError(f"{name} 实现已变更或已有其他包装，拒绝接管")
@@ -200,7 +183,7 @@ class RuntimeAdapter:
                 for name in ("normalize_path", "normalize_return_path"):
                     original = getattr(host.module_class, name)
                     own_value = vars(host.module_class).get(name, _MISSING)
-                    wrapper = self._wrapper(original, name == "normalize_return_path")
+                    wrapper = self._wrapper(original, returning=name == "normalize_return_path")
                     setattr(host.module_class, name, wrapper)
                     self._patches.append((host.module_class, name, own_value, wrapper))
                 self._host_class = host.module_class

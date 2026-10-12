@@ -1,4 +1,4 @@
-"""验证真实问题中的分隔符、根目录、目录边界和越界输入。"""
+"""验证 Windows 返回路径的单向前缀转换，不访问文件系统。"""
 
 import unittest
 
@@ -9,95 +9,93 @@ PathMapping = load_mapping()
 
 class MappingTests(unittest.TestCase):
     def setUp(self):
-        self.rule = PathMapping("E:/qBittorrent_download", "smb:/")
+        self.rule = PathMapping(r"E:\qBittorrent_download", "/downloads")
 
-    def test_windows_separators_and_case(self):
-        for path in [
-            "E:/qBittorrent_download/Movie/movie.mkv",
-            r"E:\qBittorrent_download\Movie\movie.mkv",
-            r"E:/qBittorrent_download\Movie\movie.mkv",
-            "e:/QBITTORRENT_DOWNLOAD/Movie/movie.mkv",
-        ]:
+    def test_windows_separators_case_and_suffix(self):
+        for path in [r"E:\qBittorrent_download\中文 Movie\A.mkv",
+                     "E:/qBittorrent_download/中文 Movie/A.mkv",
+                     r"e:/QBITTORRENT_DOWNLOAD\中文 Movie/A.mkv"]:
             with self.subTest(path=path):
-                self.assertEqual(self.rule.to_storage(path), "smb:/Movie/movie.mkv")
+                self.assertEqual(self.rule.convert(path), "/downloads/中文 Movie/A.mkv")
 
-    def test_root_round_trip(self):
-        self.assertEqual(self.rule.to_storage("E:/qBittorrent_download/"), "smb:/")
-        self.assertEqual(self.rule.to_windows("smb:/"), "E:/qBittorrent_download")
+    def test_configuration_separator_styles(self):
+        for root in [r"E:\Downloads\Movies", "E:/Downloads/Movies", r"E:/Downloads\Movies"]:
+            with self.subTest(root=root):
+                rule = PathMapping(root, "/Movies")
+                self.assertEqual(rule.convert(r"e:\downloads\movies\A.mkv"), "/Movies/A.mkv")
 
-    def test_nested_round_trip_preserves_suffix(self):
-        windows = "E:/qBittorrent_download/电影/Example.S01E01.mkv"
-        self.assertEqual(self.rule.to_windows(self.rule.to_storage(windows)), windows)
+    def test_exact_prefix_and_trailing_slashes(self):
+        for root in [r"E:\Downloads", "E:/Downloads/", "E:\\Downloads\\"]:
+            rule = PathMapping(root, "/downloads/")
+            self.assertEqual(rule.convert(r"E:\Downloads"), "/downloads")
+            self.assertEqual(rule.convert("E:/Downloads/"), "/downloads")
 
-    def test_multi_share_namespace(self):
-        rule = PathMapping("E:/qBittorrent_download", "smb:/qBittorrent_download")
-        self.assertEqual(rule.to_storage("E:/qBittorrent_download"), "smb:/qBittorrent_download")
-        self.assertEqual(rule.to_windows("smb:/qBittorrent_download/Jellyfin/a.mkv"),
-                         "E:/qBittorrent_download/Jellyfin/a.mkv")
-
-    def test_windows_segment_boundary(self):
+    def test_directory_boundary_and_other_drive(self):
         for path in ["E:/qBittorrent_download2/a.mkv", "E:/", "F:/qBittorrent_download/a"]:
             with self.subTest(path=path):
-                self.assertIsNone(self.rule.to_storage(path))
+                self.assertIsNone(self.rule.convert(path))
 
-    def test_smb_segment_boundary(self):
-        rule = PathMapping("E:/Downloads", "smb:/Downloads")
-        self.assertIsNone(rule.to_windows("smb:/Downloads2/a.mkv"))
-        self.assertIsNone(rule.to_windows("smb:/"))
-        self.assertEqual(rule.to_windows("smb:/downloads/a.mkv"), "E:/Downloads/a.mkv")
+    def test_drive_root_and_output_root(self):
+        for root in ["E:/", "E:\\"]:
+            rule = PathMapping(root, "/")
+            self.assertEqual(rule.convert("E:/"), "/")
+            self.assertEqual(rule.convert(r"E:\Movie\A.mkv"), "/Movie/A.mkv")
 
-    def test_rejects_relative_and_traversal_paths(self):
+    def test_output_prefix_case_is_preserved(self):
+        rule = PathMapping(r"E:\Downloads", "/Downloads/MOVIES")
+        self.assertEqual(rule.convert(r"e:\DOWNLOADS\Movie\A.mkv"), "/Downloads/MOVIES/Movie/A.mkv")
+
+    def test_uri_output_prefixes(self):
+        for prefix, expected in [("local:/downloads", "/downloads"),
+                                 ("smb:/downloads", "smb:/downloads"), ("smb:/", "smb:/")]:
+            rule = PathMapping(r"E:\Downloads", prefix)
+            self.assertEqual(rule.convert(r"E:\Downloads"), expected)
+            self.assertEqual(rule.convert(r"E:\Downloads\A.mkv"), expected.rstrip("/") + "/A.mkv")
+
+    def test_rejects_invalid_returned_paths(self):
         for path in ["E:relative", "/Downloads", "E:/qBittorrent_download/../outside",
-                     "E:/qBittorrent_download/a:stream", "E:/qBittorrent_download/\x00"]:
+                     r"E:\qBittorrent_download\..\outside", "E:/qBittorrent_download/a:stream",
+                     "E:/qBittorrent_download/\x00"]:
             with self.subTest(path=path), self.assertRaises(ValueError):
-                self.rule.to_storage(path)
-        for uri in ["smb:/../outside", "local:/../outside", r"smb:/Movie\a.mkv"]:
-            with self.subTest(uri=uri), self.assertRaises(ValueError):
-                self.rule.to_windows(uri)
+                self.rule.convert(path)
 
-    def test_rejects_invalid_configuration(self):
-        for windows, smb in [("E:Downloads", "smb:/"), ("E:/Downloads", "Downloads"),
-                             ("E:/../Downloads", "smb:/"), ("E:/Downloads", "smb:/../a")]:
-            with self.subTest(windows=windows, smb=smb), self.assertRaises(ValueError):
-                PathMapping(windows, smb)
+    def test_rejects_invalid_prefixes(self):
+        for root in ["E:Downloads", "/Downloads", "E:/../Downloads"]:
+            with self.subTest(root=root), self.assertRaises(ValueError):
+                PathMapping(root, "/downloads")
+        for prefix in ["relative", "//server/share", "/downloads/../outside",
+                       "/downloads/a:stream", "/downloads/\x00", r"/downloads\A"]:
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                PathMapping(r"E:\Downloads", prefix)
 
-    def test_drive_root_mapping(self):
-        rule = PathMapping("E:/", "smb:/disk")
-        self.assertEqual(rule.to_storage("E:/Movie/a.mkv"), "smb:/disk/Movie/a.mkv")
-        self.assertEqual(rule.to_windows("smb:/disk"), "E:/")
+    def test_reverse_mapping_preserves_suffix_and_normalizes_separators(self):
+        self.assertEqual(self.rule.to_windows("/downloads/中文 Movie/A.mkv"),
+                         "E:/qBittorrent_download/中文 Movie/A.mkv")
+        self.assertEqual(self.rule.to_windows("/downloads"), "E:/qBittorrent_download")
+        self.assertEqual(self.rule.convert(self.rule.to_windows("/downloads/中文 Movie/A.mkv")),
+                         "/downloads/中文 Movie/A.mkv")
 
-    def test_local_paths_and_uri_round_trip(self):
-        for storage in ("/downloads", "local:/downloads"):
-            with self.subTest(storage=storage):
-                rule = PathMapping("E:/Downloads", storage)
-                self.assertEqual(rule.to_storage(r"e:\DOWNLOADS\中文 Movie\A.mkv"),
-                                 "/downloads/中文 Movie/A.mkv")
-                for path in ("/downloads/中文 Movie/A.mkv", "local:/downloads/中文 Movie/A.mkv"):
-                    self.assertEqual(rule.to_windows(path), "E:/Downloads/中文 Movie/A.mkv")
-
-    def test_local_path_case_and_directory_boundary(self):
-        rule = PathMapping("E:/Downloads", "/Downloads")
-        for path in ("/downloads/A.mkv", "/Downloads2/A.mkv", "/", "local:/downloads/A.mkv"):
+    def test_reverse_mapping_checks_directory_boundary_and_linux_case(self):
+        for path in ("/downloads2/Movie", "/Downloads/Movie", "/other"):
             with self.subTest(path=path):
-                self.assertIsNone(rule.to_windows(path))
-        self.assertEqual(rule.to_windows("/Downloads/Movie/A.mkv"), "E:/Downloads/Movie/A.mkv")
+                self.assertIsNone(self.rule.to_windows(path))
 
-    def test_local_and_smb_namespaces_are_distinct(self):
-        local = PathMapping("E:/Downloads", "/Downloads")
-        smb = PathMapping("E:/Downloads", "smb:/Downloads")
-        self.assertIsNone(local.to_windows("smb:/Downloads/A.mkv"))
-        self.assertIsNone(smb.to_windows("/Downloads/A.mkv"))
-        self.assertIsNone(smb.to_windows("local:/Downloads/A.mkv"))
+    def test_reverse_mapping_uri_prefixes_keep_identity(self):
+        local = PathMapping(r"E:\Downloads", "local:/downloads")
+        smb = PathMapping(r"F:\Downloads", "smb:/downloads")
+        for path in ("/downloads/Movie", "local:/downloads/Movie"):
+            self.assertEqual(local.to_windows(path), "E:/Downloads/Movie")
+            self.assertIsNone(smb.to_windows(path))
+        self.assertEqual(smb.to_windows("smb:/DOWNLOADS/Movie"), "F:/Downloads/Movie")
+        self.assertIsNone(local.to_windows("smb:/downloads/Movie"))
 
-    def test_local_root_round_trip(self):
-        for storage in ("/", "local:/"):
-            rule = PathMapping("E:/Downloads", storage)
-            self.assertEqual(rule.to_storage("E:/Downloads"), "/")
-            self.assertEqual(rule.to_windows("local:/"), "E:/Downloads")
-            self.assertEqual(rule.to_windows("/Movie/A.mkv"), "E:/Downloads/Movie/A.mkv")
-
-    def test_invalid_local_storage_paths(self):
-        for path in ("relative/path", "local:relative", "//server/share", "ftp:/Downloads",
-                     "/downloads/../outside", "/downloads/a:stream", "/downloads/\x00", r"/downloads\A"):
+    def test_reverse_mapping_rejects_invalid_input(self):
+        for path in ("downloads/Movie", "/downloads/../outside", r"/downloads\Movie",
+                     "/downloads/a:stream", "/downloads/\x00"):
             with self.subTest(path=path), self.assertRaises(ValueError):
-                PathMapping("E:/Downloads", path)
+                self.rule.to_windows(path)
+
+    def test_reverse_mapping_to_drive_root(self):
+        rule = PathMapping("E:\\", "/disk")
+        self.assertEqual(rule.to_windows("/disk"), "E:/")
+        self.assertEqual(rule.to_windows("/disk/Movie"), "E:/Movie")

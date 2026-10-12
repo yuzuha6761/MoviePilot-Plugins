@@ -7,7 +7,7 @@ from threading import RLock
 from app.sdk.plugin import _PluginBase
 from app.sdk.logging import logger
 
-from .runtime import RuntimeAdapter, RuntimeConfig, get_downloader_names, migrate_config
+from .runtime import RuntimeAdapter, RuntimeConfig, get_downloader_names
 
 
 def _serialized(method):
@@ -22,9 +22,9 @@ class WindowsQbSmb(_PluginBase):
     """默认关闭；仅在宿主契约检查通过后启用实验性运行时适配。"""
 
     plugin_name = "下载器路径映射"
-    plugin_desc = "将 Windows qBittorrent 下载路径与 MoviePilot 本地或 SMB 存储路径双向映射，支持多下载器、多条映射及临时目录。"
+    plugin_desc = "将 Windows qBittorrent 返回路径转换为 Linux 风格，并在下载下发、修改保存位置时反向转换，支持多下载器和多条前缀映射。"
     plugin_icon = ""
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "Local"
     plugin_config_prefix = "windowsqbsmb_"
     plugin_order = 50
@@ -84,9 +84,7 @@ class WindowsQbSmb(_PluginBase):
 
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """动态发现下载器，使用宿主表单事件添加、切换和删除映射。"""
-        defaults = migrate_config(getattr(self, "_config", {}))
-        defaults.setdefault("enabled", False)
-        defaults["mapping_index"] = 0
+        defaults = {"enabled": False, "downloaders": [], "mappings": [], "mapping_index": 0}
         notice = ""
         try:
             names = get_downloader_names()
@@ -98,9 +96,9 @@ class WindowsQbSmb(_PluginBase):
         content = [{
             "component": "VAlert",
             "props": {"type": "info", "variant": "tonal", "class": "mb-4"},
-            "text": "所选下载器共用以下映射。Windows 路径与 MoviePilot 存储路径须指向同一目录，"
-                    "并在下载目录设置中选择对应存储。插件只转换路径，不挂载或复制文件。"
-                    "临时目录在已有映射范围外时，请另加一条；各条映射不能重叠。",
+            "text": "返回路径按“转换前 → 转换后”替换前缀，并统一为正斜杠。"
+                    "下载下发和修改保存位置时按相反方向转换。所选下载器共用以下映射；"
+                    "两侧路径前缀均不能重叠，未匹配的路径会提示错误。",
         }, {"component": "VSwitch", "props": {"model": "enabled", "label": "启用运行时适配"}}, {
             "component": "VSelect",
             "props": {"model": "downloaders", "label": "下载器（可多选）",
@@ -116,16 +114,17 @@ class WindowsQbSmb(_PluginBase):
             "component": "VSelect",
             "props": {"model": "mapping_index", "label": "映射关系",
                       "items": "{{ mappings.map((item, index) => ({value: index, title: "
-                               "(index + 1) + '. ' + (item.windows_root || '待填写 Windows 路径')"
-                               " + ' → ' + (item.storage_root || '待填写存储路径')})) }}",
+                               "(index + 1) + '. ' + (item.windows_root || '待填写转换前前缀')"
+                               " + ' → ' + (item.storage_root || '待填写转换后前缀')})) }}",
                       "disabled": "{{ !mappings.length }}",
                       "hint": "添加后填写下方路径；选择已有映射可修改或删除",
                       "persistent-hint": True, "class": "mb-4"},
         }])
         # FormRender 仅对顶层键提供 v-model；数组项用表达式和更新事件绑定。
         for key, label, hint in [
-            ("windows_root", "Windows 下载根路径", "例如 E:/qBittorrent_download 或 F:/Incomplete"),
-            ("storage_root", "MoviePilot 存储路径", "本地例如 /downloads 或 local:/downloads；SMB 例如 smb:/ 或 smb:/downloads"),
+            ("windows_root", "转换前路径前缀",
+             r"例如 E:\qBittorrent_download 或 F:\Incomplete；支持反斜杠、正斜杠及混用"),
+            ("storage_root", "转换后路径前缀", "例如 /downloads 或 /incomplete；使用正斜杠"),
         ]:
             content.append({
                 "component": "VTextField",

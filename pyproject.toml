@@ -1,7 +1,7 @@
 [project]
 name = "MoviePilot-Plugins"
-version = "0.2.0"
-description = "将 Windows qBittorrent 下载路径与 MoviePilot 本地或 SMB 存储路径双向映射，支持多下载器、多条映射及临时目录。"
+version = "0.2.1"
+description = "将 Windows qBittorrent 返回路径转换为 Linux 风格，并在下载下发、修改保存位置时反向转换，支持多下载器和多条前缀映射。"
 requires-python = ">=3.12"
 dependencies = []
 
