@@ -117,6 +117,30 @@ class UpstreamTests(unittest.TestCase):
         self.assertEqual(task.content_path, "/downloads/Movie/A.mkv")
         self.assertEqual(task.save_path, "/downloads")
 
+    def test_original_methods_with_multiple_downloaders_and_mappings(self):
+        self.adapter.stop()
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB", "Linux qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+                {"windows_root": "F:/Temp", "storage_root": "/temp"},
+                {"windows_root": "G:/TV", "storage_root": "/tv"},
+            ],
+        })
+        self.adapter = self.runtime.RuntimeAdapter(config, resolver=self.adapter._resolver)
+        self.addCleanup(self.adapter.stop)
+        self.adapter.start()
+        for name in config.downloaders:
+            self.module.download("magnet:?xt=urn:btih:test", Path("smb:/downloads"), "", downloader=name)
+            self.assertEqual(self.sent[-1]["download_dir"], "E:/Downloads")
+            self.module.update_torrent("hash", save_path="/tv/Movie", downloader=name)
+            self.assertEqual(self.sent[-1]["location"], "G:/TV/Movie")
+            self.rows[name] = [{"name": "Movie", "content_path": r"F:\Temp\Movie\A.mkv",
+                                "save_path": r"F:\Temp", "state": "uploading"}]
+            task = self.module.list_torrents(downloader=name)[0]
+            self.assertEqual(task.content_path, "/temp/Movie/A.mkv")
+            self.assertEqual(task.save_path, "/temp")
+
     def test_original_list_all_statuses_and_content_fallback(self):
         self.rows["Linux qB"] = [{"name": "Linux", "save_path": "/data", "state": "uploading"}]
         for raw in [r"E:\Downloads\中文 Movie\A.mkv", r"e:/DOWNLOADS\中文 Movie\A.mkv"]:

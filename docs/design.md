@@ -1,4 +1,4 @@
-# Windows qBittorrent 路径映射：设计记录
+# 下载器路径映射：设计记录
 
 ## 基线与问题
 
@@ -18,7 +18,7 @@ MoviePilot V3 `99ef7e508b829e81cedaf55b3aea0387baca2515`（声明版本 3.1.4）
 存储路径支持本地绝对路径（`/downloads`、`local:/downloads`）和 SMB URI。
 Windows 路径返回时，本地映射输出 `/downloads/...`，SMB 映射保留 `smb:/...` 存储身份。
 本地路径按大小写精确匹配，SMB 维持大小写不敏感；两种存储命名空间互不匹配。
-为兼容已有配置，表单仍使用 `smb_root`、`smb_temp_root` 配置键，但标签与值已支持两类存储。
+0.1.0 表单使用 `smb_root`、`smb_temp_root` 配置键，但标签与值已支持两类存储。
 本地目录需由部署环境预先挂载，映射层不访问文件系统，不负责挂载或复制。
 
 只在 `QbittorrentModule` 上增加 `normalize_path` 和 `normalize_return_path` 包装，
@@ -40,6 +40,22 @@ DownloaderTorrent.content_path → 字幕/整理的 URI 解析与父目录计算
 
 根路径返回规范的 `smb:/`，使下游查询 `/`。不对 SMB 做全局补丁，
 不替换元数据查询结果，不吞掉连接/权限异常。其他调用方的非标准根路径缺陷仍保留。
+
+## 0.2.0 配置交互
+
+通过 `app.sdk.services.ServiceConfigHelper` 自动列出已启用的 qBittorrent 下载器，
+`downloaders` 保存多选名称，运行时只接管这些名称（包括宿主默认下载器解析结果）。
+所有选中下载器共用 `mappings` 列表，每条包含 `windows_root`、`storage_root`；
+任意两条规则都检查双向根路径重叠，不限制为主目录和临时目录两条。
+
+表单使用 `VSelect` 切换映射、路径输入框编辑当前项，以及添加/删除按钮。
+已按上述前端基线的 `FormRender.vue` 核对表达式与事件接口：数组项通过
+`modelValue` 表达式和 `onUpdate:modelValue` 写回，避免不受支持的嵌套 `v-model`。
+`mapping_index` 仅记录编辑位置，不参与路径转换。
+
+旧配置在读取时转换为新表单默认值，不写入宿主配置；保存后新键优先，
+显式空列表不会回退到残留旧键。删除旧版说明，改为共享映射、目录对应、
+临时目录和禁止重叠等操作提示；版本、签名和源码摘要检查保持不变。
 
 ## 生命周期与兼容检查
 
@@ -86,3 +102,14 @@ python3 tools/check_upstream.py /path/to/MoviePilot
 - 安装流程及宿主调度器生命周期、实际镜像方法契约检查。
 
 验证前保留原有可用下载器配置，不自动迁移在途任务，不连接生产服务。
+
+## 0.2.0 验证记录（2026-10-12）
+
+- 环境：macOS ARM64，临时 Python 3.12.15，Node 26.5.1；未修改系统 Python。
+- 单元测试：`python3 -m unittest discover -s tests -v` 共 49 项通过。
+  其中表单事件测试使用 Node 执行宿主表达式/事件语义，覆盖添加、切换、编辑、删除及序列化；
+  缺少 Node 的环境会跳过该项，此次未跳过。
+- 隔离回归：`tools/check_upstream.py` 针对文首后端基线的 5 项检查通过，
+  包含多选下载器下的多条映射、原下载/位置更新/任务列表和 SMB 归属校验。
+- `compileall` 与 `git diff --check` 通过。
+- 未进行实际宿主页面或部署验证；测试未连接真实下载器、SMB 或数据库，未发布插件。

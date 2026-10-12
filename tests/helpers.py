@@ -34,8 +34,11 @@ def load_plugin(base=object):
     sdk._PluginBase = base
     logging = ModuleType("app.sdk.logging")
     logging.logger = Mock()
+    services = ModuleType("app.sdk.services")
+    services.ServiceConfigHelper = Mock()
+    services.ServiceConfigHelper.get_downloader_configs.return_value = []
     stubs = {"app": ModuleType("app"), "app.sdk": ModuleType("app.sdk"),
-             "app.sdk.plugin": sdk, "app.sdk.logging": logging}
+             "app.sdk.plugin": sdk, "app.sdk.logging": logging, "app.sdk.services": services}
     spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / "__init__.py")
     module = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, {**stubs, name: module}):

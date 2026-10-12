@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -38,17 +39,65 @@ class PluginContractTests(unittest.TestCase):
         self.plugin.stop_service()
         self.assertFalse(self.plugin.get_state())
 
-    def test_forms_are_serializable_and_mark_development_status(self):
+    def test_forms_are_serializable_and_show_usage_hints(self):
         form, defaults = self.plugin.get_form()
         text = json.dumps(form, ensure_ascii=False)
-        self.assertIn("实验版", text)
+        self.assertNotIn("实验版", text)
+        self.assertNotIn("方法契约", text)
         self.assertIn("windows_root", text)
         self.assertIn("MoviePilot 存储路径", text)
         self.assertIn("local:/downloads", text)
         self.assertNotIn("必须选择 SMB", text)
-        self.assertEqual(defaults["smb_root"], "smb:/")
+        self.assertIn("添加映射", text)
+        self.assertIn("删除映射", text)
+        self.assertIn("所选下载器共用", text)
+        self.assertEqual(defaults["downloaders"], [])
+        self.assertEqual(defaults["mappings"], [])
         self.assertFalse(defaults["enabled"])
         json.dumps(self.plugin.get_page(), ensure_ascii=False)
+
+    def test_downloader_options_use_sdk_and_filter_disabled_or_other_types(self):
+        from app.sdk.services import ServiceConfigHelper
+        ServiceConfigHelper.get_downloader_configs.return_value = [
+            SimpleNamespace(name="Windows qB", enabled=True, type="qbittorrent"),
+            SimpleNamespace(name="Second qB", enabled=True, type="qbittorrent"),
+            SimpleNamespace(name="Disabled", enabled=False, type="qbittorrent"),
+            SimpleNamespace(name="Transmission", enabled=True, type="transmission"),
+        ]
+        form, _ = self.plugin.get_form()
+        select = next(item["props"] for item in form[0]["content"]
+                      if item.get("props", {}).get("model") == "downloaders")
+        self.assertEqual(select["items"], [{"title": n, "value": n}
+                                         for n in ("Windows qB", "Second qB")])
+        self.assertTrue(select["multiple"])
+
+    def test_discovery_failure_still_allows_editing_configuration(self):
+        with patch.object(self.module, "get_downloader_names", side_effect=RuntimeError("offline")):
+            form, _ = self.plugin.get_form()
+        self.assertIn("下载器列表读取失败", json.dumps(form, ensure_ascii=False))
+
+    def test_legacy_values_are_visible_without_writing_configuration(self):
+        old = {"enabled": False, "downloader": "Windows qB",
+               "windows_root": "E:/Downloads", "smb_root": "smb:/downloads",
+               "windows_temp_root": "F:/Temp", "smb_temp_root": "/temp"}
+        self.plugin.init_plugin(old)
+        _, defaults = self.plugin.get_form()
+        # 与宿主 API 一样，将持久化配置覆盖到表单默认值上。
+        merged = {**defaults, **old}
+        self.assertEqual(merged["downloaders"], ["Windows qB"])
+        self.assertEqual(merged["mappings"], [
+            {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+            {"windows_root": "F:/Temp", "storage_root": "/temp"},
+        ])
+        self.assertEqual(self.plugin._config, old)
+
+    def test_new_config_reopens_without_restoring_removed_legacy_values(self):
+        config = {"downloader": "Old", "windows_root": "E:/Old", "smb_root": "smb:/",
+                  "downloaders": [], "mappings": [], "enabled": False}
+        self.plugin.init_plugin(config)
+        _, defaults = self.plugin.get_form()
+        self.assertEqual(defaults["downloaders"], [])
+        self.assertEqual(defaults["mappings"], [])
 
     def test_disabled_does_not_resolve_host(self):
         with patch.object(self.module, "RuntimeAdapter") as adapter:
@@ -76,3 +125,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(metadata["version"], self.plugin.plugin_version)
         self.assertEqual(metadata["name"], self.plugin.plugin_name)
         self.assertEqual(metadata["description"], self.plugin.plugin_desc)
+        import tomllib
+        project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+        self.assertEqual(project["version"], self.plugin.plugin_version)
+        self.assertIn("v" + self.plugin.plugin_version, metadata["history"])

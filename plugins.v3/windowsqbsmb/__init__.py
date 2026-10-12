@@ -1,4 +1,4 @@
-"""Windows qBittorrent 路径映射插件入口。"""
+"""下载器路径映射插件入口。"""
 
 from typing import Any
 from functools import wraps
@@ -7,7 +7,7 @@ from threading import RLock
 from app.sdk.plugin import _PluginBase
 from app.sdk.logging import logger
 
-from .runtime import RuntimeAdapter, RuntimeConfig
+from .runtime import RuntimeAdapter, RuntimeConfig, get_downloader_names, migrate_config
 
 
 def _serialized(method):
@@ -21,10 +21,10 @@ def _serialized(method):
 class WindowsQbSmb(_PluginBase):
     """默认关闭；仅在宿主契约检查通过后启用实验性运行时适配。"""
 
-    plugin_name = "Windows qBittorrent 路径映射"
-    plugin_desc = "配置 Windows qBittorrent 与 MoviePilot 本地或 SMB 存储的双向路径映射，兼容混合斜杠和临时目录，无需修改 MoviePilot 镜像。实验版。"
+    plugin_name = "下载器路径映射"
+    plugin_desc = "将 Windows qBittorrent 下载路径与 MoviePilot 本地或 SMB 存储路径双向映射，支持多下载器、多条映射及临时目录。"
     plugin_icon = ""
-    plugin_version = "0.1.0"
+    plugin_version = "0.2.0"
     plugin_author = "Local"
     plugin_config_prefix = "windowsqbsmb_"
     plugin_order = 50
@@ -59,7 +59,7 @@ class WindowsQbSmb(_PluginBase):
     def get_service(self) -> list:
         if not self.get_state():
             return []
-        return [{"id": "WindowsQbSmbRuntimeCheck", "name": "Windows qBittorrent 路径映射运行检查",
+        return [{"id": "WindowsQbSmbRuntimeCheck", "name": "下载器路径映射运行检查",
                  "trigger": "interval", "func": self._check_runtime,
                  "kwargs": {"seconds": 30}}]
 
@@ -83,28 +83,71 @@ class WindowsQbSmb(_PluginBase):
         return []
 
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """提供独立 Windows 路径输入，避免宿主 POSIX 路径表单的限制。"""
-        fields = [
-            ("downloader", "下载器配置名称", "与 MoviePilot 下载器名称一致"),
-            ("windows_root", "Windows 下载根路径", "例如 E:/qBittorrent_download"),
-            ("smb_root", "MoviePilot 存储路径", "本地例如 /downloads 或 local:/downloads；SMB 例如 smb:/"),
-            ("windows_temp_root", "Windows 临时目录（可选）", "仅临时目录在主映射范围外时填写"),
-            ("smb_temp_root", "临时目录存储路径（可选）", "与 Windows 临时目录成对填写，可使用本地或 SMB 路径"),
-        ]
+        """动态发现下载器，使用宿主表单事件添加、切换和删除映射。"""
+        defaults = migrate_config(getattr(self, "_config", {}))
+        defaults.setdefault("enabled", False)
+        defaults["mapping_index"] = 0
+        notice = ""
+        try:
+            names = get_downloader_names()
+            if not names:
+                notice = "未发现已启用的 qBittorrent 下载器，请先在 MoviePilot 中配置并启用，再重新打开此页面。"
+        except Exception:
+            names = ()
+            notice = "下载器列表读取失败，请检查 MoviePilot 下载器配置后重新打开此页面。"
         content = [{
             "component": "VAlert",
-            "props": {"type": "info", "variant": "tonal"},
-            "text": "实验版，仅适配已核对的 MoviePilot 3.1.4 方法契约。"
-                    "下载目录选择与映射一致的本地或 SMB 存储；未映射路径会报错。",
-        }, {"component": "VSwitch", "props": {"model": "enabled", "label": "启用运行时适配"}}]
-        content.extend({
-            "component": "VTextField",
-            "props": {"model": key, "label": label, "hint": hint, "persistent-hint": True},
-        } for key, label, hint in fields)
-        return [{"component": "VForm", "content": content}], {
-            "enabled": False, "downloader": "", "windows_root": "", "smb_root": "smb:/",
-            "windows_temp_root": "", "smb_temp_root": "",
-        }
+            "props": {"type": "info", "variant": "tonal", "class": "mb-4"},
+            "text": "所选下载器共用以下映射。Windows 路径与 MoviePilot 存储路径须指向同一目录，"
+                    "并在下载目录设置中选择对应存储。插件只转换路径，不挂载或复制文件。"
+                    "临时目录在已有映射范围外时，请另加一条；各条映射不能重叠。",
+        }, {"component": "VSwitch", "props": {"model": "enabled", "label": "启用运行时适配"}}, {
+            "component": "VSelect",
+            "props": {"model": "downloaders", "label": "下载器（可多选）",
+                      "items": [{"title": name, "value": name} for name in names],
+                      "multiple": True, "chips": True, "closable-chips": True,
+                      "hint": "自动读取 MoviePilot 中已启用的 qBittorrent 下载器",
+                      "persistent-hint": True, "class": "mb-4"},
+        }]
+        if notice:
+            content.append({"component": "VAlert", "props": {"type": "warning", "class": "mb-4"},
+                            "text": notice})
+        content.extend([{
+            "component": "VSelect",
+            "props": {"model": "mapping_index", "label": "映射关系",
+                      "items": "{{ mappings.map((item, index) => ({value: index, title: "
+                               "(index + 1) + '. ' + (item.windows_root || '待填写 Windows 路径')"
+                               " + ' → ' + (item.storage_root || '待填写存储路径')})) }}",
+                      "disabled": "{{ !mappings.length }}",
+                      "hint": "添加后填写下方路径；选择已有映射可修改或删除",
+                      "persistent-hint": True, "class": "mb-4"},
+        }])
+        # FormRender 仅对顶层键提供 v-model；数组项用表达式和更新事件绑定。
+        for key, label, hint in [
+            ("windows_root", "Windows 下载根路径", "例如 E:/qBittorrent_download 或 F:/Incomplete"),
+            ("storage_root", "MoviePilot 存储路径", "本地例如 /downloads 或 local:/downloads；SMB 例如 smb:/ 或 smb:/downloads"),
+        ]:
+            content.append({
+                "component": "VTextField",
+                "props": {"modelValue": "{{ mappings[mapping_index]?." + key + " || '' }}",
+                          "onUpdate:modelValue": "value => { if (mappings[mapping_index]) "
+                                                  "mappings[mapping_index]." + key + " = value; }",
+                          "disabled": "{{ !mappings[mapping_index] }}", "label": label,
+                          "hint": hint, "persistent-hint": True, "class": "mb-4"},
+            })
+        content.extend([{
+            "component": "VBtn", "text": "添加映射",
+            "props": {"color": "primary", "variant": "tonal", "class": "mr-3", "type": "button",
+                      "onClick": "() => { mappings.push({windows_root: '', storage_root: ''}); "
+                                 "mapping_index = mappings.length - 1; }"},
+        }, {
+            "component": "VBtn", "text": "删除映射",
+            "props": {"color": "error", "variant": "text", "type": "button",
+                      "disabled": "{{ !mappings[mapping_index] }}",
+                      "onClick": "() => { if (mappings[mapping_index]) mappings.splice(mapping_index, 1); "
+                                 "mapping_index = Math.max(0, Math.min(mapping_index, mappings.length - 1)); }"},
+        }])
+        return [{"component": "VForm", "content": content}], defaults
 
     @_serialized
     def get_page(self) -> list:

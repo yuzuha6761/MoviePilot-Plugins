@@ -58,6 +58,77 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(module.normalize_return_path(Path("/data"), name), "original-return:/data")
         self.assertEqual(HostPaths().normalize_path(Path("/data"), None), "original-send:/data")
 
+    def test_multiple_downloaders_and_three_mappings(self):
+        self.adapter.stop()
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB", "Second qB", "Windows qB"],
+            "mappings": [
+                {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+                {"windows_root": "F:/Temp", "storage_root": "/temp"},
+                {"windows_root": "G:/TV", "storage_root": "local:/tv"},
+            ],
+        })
+        self.assertEqual(config.downloaders, ("Windows qB", "Second qB"))
+        self.host = self.runtime.HostBindings("v3.1.4", self.host_class,
+                                              ("Windows qB", "Second qB", "Linux qB"))
+        self.make_adapter(config).start()
+        for downloader in config.downloaders:
+            module = self.module(downloader)
+            for name in (downloader, None):
+                for rule in config.mappings:
+                    self.assertEqual(module.normalize_path(Path(rule.storage_root + "/Movie"), name),
+                                     rule.windows_root + "/Movie")
+                    self.assertEqual(module.normalize_return_path(Path(rule.windows_root + "/Movie"), name),
+                                     rule.storage_root.removeprefix("local:") + "/Movie")
+        self.assertEqual(self.module("Linux qB").normalize_path(Path("/data"), None),
+                         "original-send:/data")
+
+    def test_any_missing_selected_downloader_stops_all_wrappers(self):
+        self.adapter.stop()
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB", "Second qB"],
+            "mappings": [{"windows_root": "E:/Downloads", "storage_root": "smb:/"}],
+        })
+        self.host = self.runtime.HostBindings("v3.1.4", self.host_class, config.downloaders)
+        adapter = self.make_adapter(config)
+        adapter.start()
+        self.host = self.runtime.HostBindings("v3.1.4", self.host_class, ("Windows qB",))
+        with self.assertRaises(self.runtime.CompatibilityError):
+            adapter.refresh()
+        self.assertFalse(adapter.is_active())
+        self.assertNotIn("normalize_path", vars(self.host_class))
+
+    def test_multi_mapping_checks_every_pair(self):
+        base = {"downloaders": ["Windows qB"], "mappings": [
+            {"windows_root": "E:/Downloads", "storage_root": "smb:/downloads"},
+            {"windows_root": "F:/Temp", "storage_root": "/temp"},
+        ]}
+        for third in [
+            {"windows_root": "f:/TEMP/child", "storage_root": "/other"},
+            {"windows_root": "G:/Other", "storage_root": "local:/temp/child"},
+            {"windows_root": "G:/Other", "storage_root": "smb:/DOWNLOADS"},
+        ]:
+            with self.subTest(third=third), self.assertRaisesRegex(ValueError, "映射重叠"):
+                self.runtime.RuntimeConfig.from_dict({**base, "mappings": [*base["mappings"], third]})
+
+    def test_new_configuration_rejects_empty_and_malformed_values(self):
+        base = {"downloaders": ["Windows qB"], "mappings": [
+            {"windows_root": "E:/Downloads", "storage_root": "smb:/"}]}
+        for extra in [{"downloaders": []}, {"downloaders": "Windows qB"},
+                      {"downloaders": [None]}, {"downloaders": [" "]},
+                      {"mappings": []}, {"mappings": "bad"}, {"mappings": [None]},
+                      {"mappings": [{"windows_root": "F:/Temp"}]},
+                      {"mappings": [{"windows_root": "", "storage_root": ""}]}]:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.runtime.RuntimeConfig.from_dict({**base, **extra,
+                    "downloader": "Legacy", "windows_root": "E:/Old", "smb_root": "smb:/"})
+
+    def test_legacy_and_new_configuration_convert_identically(self):
+        self.assertEqual(self.config, self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB"],
+            "mappings": [{"windows_root": "E:/Downloads", "storage_root": "smb:/"}],
+        }))
+
     def test_unmapped_or_invalid_never_falls_back_to_local(self):
         for path in ["F:/Temp/Movie", "E:/Downloads2/Movie", "E:/Downloads/../Movie", "/linux"]:
             with self.subTest(path=path), self.assertRaises(ValueError):
