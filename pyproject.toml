@@ -1,0 +1,10 @@
+[project]
+name = "moviepilot-v3-plugins"
+version = "0.1.0"
+description = "MoviePilot V3 Windows qBittorrent 路径映射插件，支持 Windows 与本地或 SMB 存储双向路径转换"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

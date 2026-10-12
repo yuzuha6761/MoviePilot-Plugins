@@ -1,0 +1,15 @@
+{
+  "WindowsQbSmb": {
+    "name": "Windows qBittorrent 路径映射",
+    "description": "配置 Windows qBittorrent 与 MoviePilot 本地或 SMB 存储的双向路径映射，兼容混合斜杠和临时目录，无需修改 MoviePilot 镜像。实验版。",
+    "version": "0.1.0",
+    "icon": "",
+    "author": "Local",
+    "level": 1,
+    "order": 50,
+    "system_version": ">=3.1.4,<3.1.5",
+    "history": {
+      "v0.1.0": "首次发布：提供独立配置表单、Windows 与本地或 SMB 存储双向路径映射、临时目录映射、宿主兼容检查及启停恢复。"
+    }
+  }
+}

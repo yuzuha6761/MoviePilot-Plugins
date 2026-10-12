@@ -1,0 +1,46 @@
+# Python 字节码与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env/
+
+# 测试、类型检查与代码检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# 覆盖率报告
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# 构建与打包产物
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# 本地环境配置；保留可提交的配置示例
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# IDE 配置与编辑器临时文件
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# macOS / Windows 自动生成文件
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
