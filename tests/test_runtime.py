@@ -39,7 +39,7 @@ class RuntimeTests(unittest.TestCase):
         self.adapter.start()
 
     def make_adapter(self, config=None):
-        adapter = self.runtime.RuntimeAdapter(config or self.config, lambda: self.host, self.digests)
+        adapter = self.runtime.RuntimeAdapter(config or self.config, lambda: (self.host,), {"qbittorrent": self.digests})
         self.addCleanup(adapter.stop)
         return adapter
 

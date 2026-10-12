@@ -18,15 +18,15 @@ def _serialized(method):
     return call
 
 
-class WindowsQbSmb(_PluginBase):
+class DownloaderPathMapping(_PluginBase):
     """默认关闭；仅在宿主契约检查通过后启用实验性运行时适配。"""
 
     plugin_name = "下载器路径映射"
-    plugin_desc = "将 Windows qBittorrent 返回路径转换为 Linux 风格，并在下载下发、修改保存位置时反向转换，支持多下载器和多条前缀映射。"
-    plugin_icon = ""
-    plugin_version = "0.2.2"
+    plugin_desc = "将运行在 Windows 上的下载器返回的种子路径转换为 MoviePilot 可识别的路径，并支持下载下发、修改保存位置时的反向转换。支持 qBittorrent、Transmission 多下载器和多条前缀映射。"
+    plugin_icon = "https://raw.githubusercontent.com/yuzuha6761/MoviePilot-Plugins/main/icons/DownloaderPathMapping.png"
+    plugin_version = "0.2.3"
     plugin_author = "Local"
-    plugin_config_prefix = "windowsqbsmb_"
+    plugin_config_prefix = "downloaderpathmapping_"
     plugin_order = 50
     auth_level = 1
 
@@ -59,7 +59,7 @@ class WindowsQbSmb(_PluginBase):
     def get_service(self) -> list:
         if not self.get_state():
             return []
-        return [{"id": "WindowsQbSmbRuntimeCheck", "name": "下载器路径映射运行检查",
+        return [{"id": "DownloaderPathMappingRuntimeCheck", "name": "下载器路径映射运行检查",
                  "trigger": "interval", "func": self._check_runtime,
                  "kwargs": {"seconds": 30}}]
 
@@ -89,7 +89,7 @@ class WindowsQbSmb(_PluginBase):
         try:
             names = get_downloader_names()
             if not names:
-                notice = "未发现已启用的 qBittorrent 下载器，请先在 MoviePilot 中配置并启用，再重新打开此页面。"
+                notice = "未发现已启用的 qBittorrent 或 Transmission 下载器，请先在 MoviePilot 中配置并启用，再重新打开此页面。"
         except Exception:
             names = ()
             notice = "下载器列表读取失败，请检查 MoviePilot 下载器配置后重新打开此页面。"
@@ -104,7 +104,7 @@ class WindowsQbSmb(_PluginBase):
             "props": {"model": "downloaders", "label": "下载器（可多选）",
                       "items": [{"title": name, "value": name} for name in names],
                       "multiple": True, "chips": True, "closable-chips": True,
-                      "hint": "自动读取 MoviePilot 中已启用的 qBittorrent 下载器",
+                      "hint": "自动读取 MoviePilot 中已启用的 qBittorrent 和 Transmission 下载器",
                       "persistent-hint": True, "class": "mb-4"},
         }]
         if notice:
@@ -125,7 +125,9 @@ class WindowsQbSmb(_PluginBase):
             ("windows_root", "转换前路径前缀",
              r"例如 E:\qBittorrent_download 或 F:\Incomplete；支持反斜杠、正斜杠及混用"),
             ("storage_root", "转换后路径前缀",
-             "本地例如 /downloads；SMB 使用 smb:/downloads，须与下发路径类型一致"),
+             "按 MoviePilot 下载目录所选的存储类型填写：本地目录 /downloads 填 /downloads；"
+             "SMB 目录 /downloads 填 smb:/downloads；SMB 根目录 / 填 smb:/。"
+             "统一使用正斜杠，SMB 的 smb: 前缀不能省略；本地根目录 / 与 SMB 根目录 smb:/ 不等价。"),
         ]:
             content.append({
                 "component": "VTextField",

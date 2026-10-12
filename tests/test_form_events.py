@@ -12,7 +12,7 @@ from helpers import load_plugin
 class FormEventTests(unittest.TestCase):
     def test_add_edit_switch_delete_and_round_trip(self):
         with load_plugin() as module:
-            form, defaults = module.WindowsQbSmb().get_form()
+            form, defaults = module.DownloaderPathMapping().get_form()
         # 使用已核对 FormRender 的相同表达式/事件上下文执行方式。
         script = r"""
 const assert = require('node:assert/strict');

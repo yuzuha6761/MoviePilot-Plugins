@@ -28,7 +28,7 @@ class PluginContractTests(unittest.TestCase):
     def setUp(self):
         module = self.enterContext(load_plugin(HostBase))
         self.module = module
-        self.plugin = module.WindowsQbSmb()
+        self.plugin = module.DownloaderPathMapping()
         self.addCleanup(self.plugin.stop_service)
 
     def test_invalid_configuration_never_enables_runtime(self):
@@ -65,12 +65,14 @@ class PluginContractTests(unittest.TestCase):
             SimpleNamespace(name="Second qB", enabled=True, type="qbittorrent"),
             SimpleNamespace(name="Disabled", enabled=False, type="qbittorrent"),
             SimpleNamespace(name="Transmission", enabled=True, type="transmission"),
+            SimpleNamespace(name="Disabled TR", enabled=False, type="transmission"),
+            SimpleNamespace(name="rTorrent", enabled=True, type="rtorrent"),
         ]
         form, _ = self.plugin.get_form()
         select = next(item["props"] for item in form[0]["content"]
                       if item.get("props", {}).get("model") == "downloaders")
         self.assertEqual(select["items"], [{"title": n, "value": n}
-                                         for n in ("Windows qB", "Second qB")])
+                                         for n in ("Windows qB", "Second qB", "Transmission")])
         self.assertTrue(select["multiple"])
 
     def test_discovery_failure_still_allows_editing_configuration(self):
@@ -119,7 +121,7 @@ class PluginContractTests(unittest.TestCase):
 
     def test_manifest_matches_entry(self):
         root = PLUGIN_DIR.parents[1]
-        metadata = json.loads((root / "package.v3.json").read_text())["WindowsQbSmb"]
+        metadata = json.loads((root / "package.v3.json").read_text())["DownloaderPathMapping"]
         self.assertEqual(metadata["version"], self.plugin.plugin_version)
         self.assertEqual(metadata["name"], self.plugin.plugin_name)
         self.assertEqual(metadata["description"], self.plugin.plugin_desc)

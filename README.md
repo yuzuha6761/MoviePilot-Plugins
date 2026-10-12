@@ -14,15 +14,15 @@ https://github.com/yuzuha6761/MoviePilot-Plugins
 
 | 插件 | 说明 |
 | --- | --- |
-| [下载器路径映射](plugins.v3/windowsqbsmb) | 将 Windows qBittorrent 返回路径转换为 Linux 风格，并在下载下发、修改保存位置时反向转换，支持多下载器和多条前缀映射。 |
+| [下载器路径映射](plugins.v3/downloaderpathmapping) | 将运行在 Windows 上的下载器返回的种子路径转换为 MoviePilot 可识别的路径，并支持下载下发、修改保存位置时的反向转换。支持 qBittorrent、Transmission 多下载器和多条前缀映射。 |
 
 ## 路径转换配置
 
-先在 MoviePilot 中配置并启用 Windows 版 qBittorrent 下载器，再打开插件设置：
+先在 MoviePilot 中配置并启用 Windows 版 qBittorrent 或 Transmission 下载器，再打开插件设置：
 
 | 配置项 | 示例 |
 | --- | --- |
-| 下载器（可多选） | 自动列出已启用的 qBittorrent 下载器，选择需要转换返回路径的下载器 |
+| 下载器（可多选） | 自动列出已启用的 qBittorrent 和 Transmission 下载器，选择需要转换返回路径的下载器 |
 | 映射关系 | 点击“添加映射”新增，通过下拉框切换编辑，或点击“删除映射”移除当前条目 |
 | 转换前路径前缀 | `E:\qBittorrent_download` |
 | 转换后路径前缀 | `/downloads` |
@@ -38,6 +38,7 @@ https://github.com/yuzuha6761/MoviePilot-Plugins
 
 如果提示“下发路径未匹配转换后路径前缀”，需核对实际下发路径与配置前缀：
 本地 `/downloads/电影` 匹配 `/downloads`，SMB `smb:/downloads/电影` 匹配 `smb:/downloads`，两种类型不混用。
+MoviePilot 下载目录选择 SMB 存储且目录为 `/` 时，“转换后路径前缀”应填 `smb:/`；填写 `/` 表示本地根目录，无法匹配 SMB 根目录。
 本地前缀区分大小写，目录按完整目录段匹配。错误日志会显示下载器、待匹配路径和已配置前缀。
 若同一堆栈后出现“未找到下载器”，应先排查前面的路径匹配错误；宿主可能在捕获转换异常后给出该汇总提示。
 

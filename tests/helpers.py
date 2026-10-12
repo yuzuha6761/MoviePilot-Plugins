@@ -7,11 +7,11 @@ from types import ModuleType
 from unittest.mock import Mock, patch
 from contextlib import contextmanager
 
-PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins.v3" / "windowsqbsmb"
+PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins.v3" / "downloaderpathmapping"
 
 
 def load_mapping():
-    name = "_windowsqbsmb_mapping_test"
+    name = "_downloaderpathmapping_mapping_test"
     spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / "mapping.py")
     module = importlib.util.module_from_spec(spec)
     previous = sys.modules.get(name)
@@ -29,7 +29,7 @@ def load_mapping():
 @contextmanager
 def load_plugin(base=object):
     """替代 SDK 边界，保留包结构以测试相对导入。"""
-    name = "_windowsqbsmb_entry_test"
+    name = "_downloaderpathmapping_entry_test"
     sdk = ModuleType("app.sdk.plugin")
     sdk._PluginBase = base
     logging = ModuleType("app.sdk.logging")

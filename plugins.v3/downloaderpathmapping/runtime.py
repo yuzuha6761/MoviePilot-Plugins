@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import wraps
 import hashlib
 import inspect
+from importlib import import_module
 from pathlib import PurePath
 import textwrap
 import threading
@@ -42,22 +43,35 @@ class HostBindings:
     version: str
     module_class: type
     downloader_names: tuple[str, ...]
+    downloader_type: str = "qbittorrent"
 
 
-def get_downloader_names():
+def get_downloader_configs():
     """通过公开 SDK 读取配置，不连接下载器。"""
     from app.sdk.services import ServiceConfigHelper
 
-    return tuple(dict.fromkeys(c.name for c in ServiceConfigHelper.get_downloader_configs()
-                               if c.enabled and c.type == "qbittorrent"))
+    return tuple(c for c in ServiceConfigHelper.get_downloader_configs()
+                 if c.enabled and c.type in METHOD_DIGESTS)
+
+
+def get_downloader_names():
+    return tuple(dict.fromkeys(c.name for c in get_downloader_configs()))
 
 
 def resolve_host():
     """仅启用时加载宿主；公开配置接口与内部适配集中在此处。"""
-    from app.modules.qbittorrent import QbittorrentModule
     from app.runtime.version import get_app_version
 
-    return HostBindings(get_app_version(), QbittorrentModule, get_downloader_names())
+    configs = get_downloader_configs()
+    version = get_app_version()
+    hosts = []
+    for kind, class_name in (("qbittorrent", "QbittorrentModule"),
+                             ("transmission", "TransmissionModule")):
+        names = tuple(dict.fromkeys(c.name for c in configs if c.type == kind))
+        if names:
+            module = import_module(f"app.modules.{kind}")
+            hosts.append(HostBindings(version, getattr(module, class_name), names, kind))
+    return tuple(hosts)
 
 
 @dataclass(frozen=True)
@@ -70,7 +84,7 @@ class RuntimeConfig:
         names = config.get("downloaders")
         if (not isinstance(names, list) or not names
                 or any(not isinstance(name, str) or not name.strip() for name in names)):
-            raise ValueError("请选择至少一个已启用的 qBittorrent 下载器")
+            raise ValueError("请选择至少一个已启用的 qBittorrent 或 Transmission 下载器")
         names = tuple(dict.fromkeys(name.strip() for name in names))
         entries = config.get("mappings")
         if not isinstance(entries, list) or not entries:
@@ -119,11 +133,11 @@ class RuntimeConfig:
 
 _MISSING = object()
 _INSTALL_LOCK = threading.RLock()
-_OWNER = "_windowsqbsmb_runtime_owner"
+_OWNER = "_downloaderpathmapping_runtime_owner"
 
 
 class RuntimeAdapter:
-    """覆盖 qBittorrent 的下发和返回路径入口，其他下载器仍调用原方法。
+    """按类型覆盖所选下载器的下发和返回路径入口，其他下载器调用原方法。
 
     配置重载保留同一个模块类，包装自动作用于新实例。Python 类重载时，
     refresh 显式重新核对契约并迁移包装。卸载后被第三方保留的旧包装只透传。
@@ -135,15 +149,15 @@ class RuntimeAdapter:
         self._digests = METHOD_DIGESTS if digests is None else digests
         self._lock = threading.RLock()
         self._patches = []
-        self._host_class = None
+        self._hosts = ()
         self._active = False
 
     def _validate(self, host):
         if host.version.lstrip("v") != SUPPORTED_VERSION:
             raise CompatibilityError(f"尚未适配 MoviePilot {host.version}，仅核对 {SUPPORTED_VERSION}")
-        if any(name not in host.downloader_names for name in self.config.downloaders):
-            raise CompatibilityError("指定的 qBittorrent 下载器不存在或未启用")
-        for name, digest in self._digests.items():
+        if host.downloader_type not in self._digests:
+            raise CompatibilityError(f"尚未适配下载器类型 {host.downloader_type}")
+        for name, digest in self._digests[host.downloader_type].items():
             method = getattr(host.module_class, name, None)
             if getattr(method, _OWNER, None) is self:
                 method = method.__wrapped__
@@ -161,14 +175,14 @@ class RuntimeAdapter:
                     or any(p.kind != p.POSITIONAL_OR_KEYWORD for p in parameters)):
                 raise CompatibilityError(f"{name} 签名不兼容")
 
-    def _wrapper(self, original, returning):
+    def _wrapper(self, original, returning, names):
         @wraps(original)
         def wrapped(module, path, downloader):
             # 锁覆盖一次纯转换。其他下载器的原方法在锁外执行。
             with self._lock:
                 if self._active:
                     selected = downloader or module.get_default_config_name()
-                    if selected in self.config.downloaders:
+                    if selected in names:
                         try:
                             return self.config.convert(path, returning=returning)
                         except ValueError as error:
@@ -179,19 +193,33 @@ class RuntimeAdapter:
 
     def start(self):
         with _INSTALL_LOCK, self._lock:
-            host = self._resolver()
-            self._validate(host)
-            if self._active and self._host_class is host.module_class:
+            available = self._resolver()
+            for name in self.config.downloaders:
+                owners = [host for host in available if name in host.downloader_names]
+                if not owners:
+                    raise CompatibilityError(f"指定的下载器 {name!r} 不存在、未启用或类型不支持")
+                if len(owners) != 1:
+                    raise CompatibilityError(f"下载器名称 {name!r} 在多个类型中重复，请修改为唯一名称")
+            hosts = tuple(HostBindings(host.version, host.module_class,
+                          tuple(name for name in host.downloader_names if name in self.config.downloaders),
+                          host.downloader_type) for host in available
+                          if any(name in self.config.downloaders for name in host.downloader_names))
+            # 所有类型先通过检查，再统一安装；任一类型失败时不留下半套包装。
+            for host in hosts:
+                self._validate(host)
+            if self._active and self._hosts == hosts:
                 return
             self.stop()
             try:
-                for name in ("normalize_path", "normalize_return_path"):
-                    original = getattr(host.module_class, name)
-                    own_value = vars(host.module_class).get(name, _MISSING)
-                    wrapper = self._wrapper(original, returning=name == "normalize_return_path")
-                    setattr(host.module_class, name, wrapper)
-                    self._patches.append((host.module_class, name, own_value, wrapper))
-                self._host_class = host.module_class
+                for host in hosts:
+                    for name in ("normalize_path", "normalize_return_path"):
+                        original = getattr(host.module_class, name)
+                        own_value = vars(host.module_class).get(name, _MISSING)
+                        wrapper = self._wrapper(original, returning=name == "normalize_return_path",
+                                                names=frozenset(host.downloader_names))
+                        setattr(host.module_class, name, wrapper)
+                        self._patches.append((host.module_class, name, own_value, wrapper))
+                self._hosts = hosts
                 self._active = True
             except Exception:
                 self.stop()
@@ -215,7 +243,7 @@ class RuntimeAdapter:
                     else:
                         setattr(target, name, original)
             self._patches.clear()
-            self._host_class = None
+            self._hosts = ()
 
     def is_active(self):
         with self._lock:

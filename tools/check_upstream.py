@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from helpers import load_plugin  # noqa: E402
@@ -92,7 +92,7 @@ class UpstreamTests(unittest.TestCase):
                 {"windows_root": "E:/Downloads", "storage_root": "smb:/"},
             ],
         })
-        self.adapter = self.runtime.RuntimeAdapter(config, resolver=lambda: host)
+        self.adapter = self.runtime.RuntimeAdapter(config, resolver=lambda: (host,))
         self.addCleanup(self.adapter.stop)
         self.adapter.start()
 
@@ -225,6 +225,112 @@ class UpstreamTests(unittest.TestCase):
         # 原归属校验未被更改，相似前缀及其他共享仍被拒绝。
         with self.assertRaises(ValueError):
             smb._relative_path(r"\\server\downloads2\file.mkv")
+
+
+class TransmissionUpstreamTests(unittest.TestCase):
+    """复用 qBittorrent 替身，验证同时启用两种真实模块方法。"""
+
+    def setUp(self):
+        UpstreamTests.setUp(self)
+        self.adapter.stop()
+        qb_host = self.adapter._resolver()[0]
+        self.configs.extend([
+            SimpleNamespace(name="Windows TR", default=False, path_mapping=[]),
+            SimpleNamespace(name="Linux TR", default=False, path_mapping=[]),
+        ])
+        namespace = {**self.namespace, "logger": Mock(),
+                     "_TRANSMISSION_PAUSED_STATES": {"stopped"},
+                     "_TRANSMISSION_DOWNLOADING_STATES": {"download_pending", "downloading"}}
+        self.tr_class = extract("app/modules/transmission/__init__.py", "TransmissionModule", [
+            "download", "list_torrents", "update_torrent", "init_module",
+            "__normalize_torrent_state"], namespace, ("_DownloaderBase",))
+        self.tr = self.tr_class()
+        self.tr._default_config_name = None
+        self.tr.get_config = lambda name: next(c for c in self.configs
+                                               if c.name == (name or self.tr.get_default_config_name()))
+        self.tr._normalize_query_status = lambda status: status or self.query.ALL
+        self.tr._get_torrent_info = lambda content: (None, content)
+        self.tr_rows = {"Windows TR": [], "Linux TR": []}
+        self.tr_sent = []
+        self.tr_servers = {}
+        for name in self.tr_rows:
+            self.tr_servers[name] = SimpleNamespace(
+                add_torrent=lambda **kw: (self.tr_sent.append(kw) or SimpleNamespace(hashString="tr-hash")),
+                set_torrent_location=lambda **kw: self.tr_sent.append(kw) or True,
+                get_torrents=lambda name=name, **kw: (list(self.tr_rows[name]), False),
+                get_completed_torrents=lambda name=name, **kw: list(self.tr_rows[name]),
+                get_downloading_torrents=lambda name=name, **kw: list(self.tr_rows[name]))
+        self.tr.get_instance = lambda name: self.tr_servers.get(name or self.tr.get_default_config_name())
+        self.tr.get_instances = lambda: self.tr_servers
+        self.module.get_instance = lambda name: self.servers.get(name or self.module.get_default_config_name())
+        self.hosts = (qb_host, self.runtime.HostBindings(qb_host.version, self.tr_class,
+                                                       tuple(self.tr_rows), "transmission"))
+        self.use_prefix("/downloads")
+
+    def use_prefix(self, prefix, root=r"E:\Downloads"):
+        self.adapter.stop()
+        config = self.runtime.RuntimeConfig.from_dict({
+            "downloaders": ["Windows qB", "Windows TR"],
+            "mappings": [{"windows_root": root, "storage_root": prefix}],
+        })
+        self.adapter = self.runtime.RuntimeAdapter(config, resolver=lambda: self.hosts)
+        self.addCleanup(self.adapter.stop)
+        self.adapter.start()
+
+    def test_both_original_download_and_location_update(self):
+        for prefix, root in (("/downloads", r"E:\Downloads"), ("smb:/", "E:\\")):
+            self.use_prefix(prefix, root)
+            expected = root.replace("\\", "/")
+            for module, name, sent in ((self.module, "Windows qB", self.sent),
+                                       (self.tr, "Windows TR", self.tr_sent)):
+                result = module.download("magnet:?xt=urn:btih:test", Path(prefix), "", downloader=name)
+                self.assertTrue(result[1])
+                self.assertEqual(sent[-1]["download_dir"], expected)
+                module.update_torrent("hash", downloader=name, save_path=prefix.rstrip("/") + "/中文 Movie")
+                self.assertEqual(sent[-1]["location"], expected.rstrip("/") + "/中文 Movie")
+        # 未选中的 Transmission 配置使用原下发路径逻辑。
+        self.tr.download("magnet:?xt=urn:btih:test", Path("/linux"), "", downloader="Linux TR")
+        self.assertEqual(self.tr_sent[-1]["download_dir"], "/linux")
+
+    def test_global_default_downloader_resolves_to_its_own_type(self):
+        for default, module, other, sent in (("Windows TR", self.tr, self.module, self.tr_sent),
+                                             ("Windows qB", self.module, self.tr, self.sent)):
+            for conf in self.configs:
+                conf.default = conf.name == default
+            self.module._default_config_name = None
+            self.tr._default_config_name = None
+            self.assertIsNone(other.download("magnet:?xt=urn:btih:test", Path("/downloads"), ""))
+            result = module.download("magnet:?xt=urn:btih:test", Path("/downloads"), "")
+            self.assertEqual(result[0], default)
+            self.assertEqual(sent[-1]["download_dir"], "E:/Downloads")
+
+    def test_transmission_original_lists_all_query_modes(self):
+        for raw, prefix, root in ((r"e:\DOWNLOADS", "/downloads", r"E:\Downloads"),
+                                  ("E:/Downloads\\", "smb:/downloads", r"E:\Downloads"),
+                                  ("E:/", "smb:/", "E:\\")):
+            self.use_prefix(prefix, root)
+            self.tr_rows["Windows TR"] = [SimpleNamespace(
+                download_dir=raw, name="中文 Movie", hashString="tr-hash", labels=[], status="seeding")]
+            self.tr_rows["Linux TR"] = [SimpleNamespace(
+                download_dir="/linux", name="Other", hashString="other", labels=[], status="seeding")]
+            for status, native in ((self.query.ALL, "seeding"), (self.query.TRANSFER, "seeding"),
+                                   (self.query.COMPLETED, "seeding"), (self.query.PAUSED, "stopped"),
+                                   (self.query.DOWNLOADING, "downloading")):
+                self.tr_rows["Windows TR"][0].status = native
+                tasks = self.tr.list_torrents(downloader="Windows TR", status=status)
+                self.assertEqual(tasks[0].content_path, prefix.rstrip("/") + "/中文 Movie")
+                self.assertEqual(tasks[0].save_path, prefix)
+            tasks = self.tr.list_torrents(hashs="tr-hash", downloader="Windows TR")
+            self.assertEqual(tasks[0].content_path, prefix.rstrip("/") + "/中文 Movie")
+            self.assertEqual(self.tr.list_torrents(downloader="Linux TR")[0].save_path, "/linux")
+            self.assertEqual(len(self.tr.list_torrents()), 2)
+
+    def test_transmission_mismatch_never_reaches_client(self):
+        with self.assertRaisesRegex(ValueError, "Windows TR"):
+            self.tr.download("magnet:?xt=urn:btih:test", Path("smb:/downloads"), "", downloader="Windows TR")
+        with self.assertRaisesRegex(ValueError, "Windows TR"):
+            self.tr.update_torrent("hash", downloader="Windows TR", save_path="/other")
+        self.assertEqual(self.tr_sent, [])
 
 
 if __name__ == "__main__":
