@@ -24,7 +24,7 @@ class DownloaderPathMapping(_PluginBase):
     plugin_name = "下载器路径映射"
     plugin_desc = "将运行在 Windows 上的下载器返回的种子路径转换为 MoviePilot 可识别的路径，并支持下载下发、修改保存位置时的反向转换。支持 qBittorrent、Transmission 多下载器和多条前缀映射。"
     plugin_icon = "https://raw.githubusercontent.com/yuzuha6761/MoviePilot-Plugins/main/icons/DownloaderPathMapping.png"
-    plugin_version = "0.2.3"
+    plugin_version = "0.2.4"
     plugin_author = "yuzuha6761"
     plugin_config_prefix = "downloaderpathmapping_"
     plugin_order = 50

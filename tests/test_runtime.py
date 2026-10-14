@@ -267,12 +267,31 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.module().normalize_path(Path("smb:/"), None), "E:/Downloads")
 
     def test_unsupported_version_or_missing_downloader_removes_patches(self):
-        for version, names in [("v3.1.5", ("Windows qB",)), ("v3.1.4", ())]:
+        for version, names in [("v3.1.3", ("Windows qB",)), ("v3.1.4", ())]:
             self.host = self.runtime.HostBindings(version, self.host_class, names)
             with self.assertRaises(self.runtime.CompatibilityError):
                 self.adapter.refresh()
             self.assertFalse(self.adapter.is_active())
             self.assertNotIn("normalize_path", vars(self.host_class))
+
+    def test_minimum_and_newer_versions_allow_path_mapping(self):
+        for version in ("3.1.4", "v3.1.5", "3.1.10", "3.2.0", "3.10.0", "4.0.0",
+                        "v3.1.4-1", "3.1.5+build.1"):
+            with self.subTest(version=version):
+                self.host = self.runtime.HostBindings(version, self.host_class, ("Windows qB",))
+                self.adapter.refresh()
+                self.assertTrue(self.adapter.is_active())
+                self.assertEqual(self.module().normalize_path(Path("smb:/"), None), "E:/Downloads")
+
+    def test_old_or_invalid_versions_rejected(self):
+        self.adapter.stop()
+        for version in ("3.0.99", "2.99.99", "", "unknown", "3.1", "3.1.4garbage"):
+            with self.subTest(version=version):
+                self.host = self.runtime.HostBindings(version, self.host_class, ("Windows qB",))
+                with self.assertRaises(self.runtime.CompatibilityError):
+                    self.adapter.start()
+                self.assertFalse(self.adapter.is_active())
+                self.assertNotIn("normalize_path", vars(self.host_class))
 
     def test_other_plugin_before_install_rejected_without_mutation(self):
         self.adapter.stop()

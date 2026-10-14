@@ -1,7 +1,7 @@
 """已核对的上游方法 AST 摘要；更新时需重新审查调用顺序。"""
 
 UPSTREAM_COMMIT = "99ef7e508b829e81cedaf55b3aea0387baca2515"
-SUPPORTED_VERSION = "3.1.4"
+MINIMUM_VERSION = "3.1.4"
 QBITTORRENT_METHOD_DIGESTS = {
     'download': '1c93dffefbd7baf3a72a2d811fb21dc9c5877a9c7ae3089b7edd15f0942e4634',
     'get_default_config_name': 'c4d162db3295042ab4e531a858ffd95008991d97459cf541875127f8b6289283',

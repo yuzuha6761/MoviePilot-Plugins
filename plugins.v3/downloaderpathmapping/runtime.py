@@ -7,11 +7,12 @@ import hashlib
 import inspect
 from importlib import import_module
 from pathlib import PurePath
+import re
 import textwrap
 import threading
 
 from .mapping import PathMapping
-from .compatibility import METHOD_DIGESTS, SUPPORTED_VERSION
+from .compatibility import METHOD_DIGESTS, MINIMUM_VERSION
 
 
 class CompatibilityError(RuntimeError):
@@ -153,8 +154,12 @@ class RuntimeAdapter:
         self._active = False
 
     def _validate(self, host):
-        if host.version.lstrip("v") != SUPPORTED_VERSION:
-            raise CompatibilityError(f"尚未适配 MoviePilot {host.version}，仅核对 {SUPPORTED_VERSION}")
+        version = re.fullmatch(
+            r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?", host.version)
+        if version is None:
+            raise CompatibilityError(f"无法识别 MoviePilot 版本 {host.version!r}")
+        if tuple(map(int, version.groups())) < tuple(map(int, MINIMUM_VERSION.split("."))):
+            raise CompatibilityError(f"MoviePilot {host.version} 低于最低支持版本 {MINIMUM_VERSION}")
         if host.downloader_type not in self._digests:
             raise CompatibilityError(f"尚未适配下载器类型 {host.downloader_type}")
         for name, digest in self._digests[host.downloader_type].items():
