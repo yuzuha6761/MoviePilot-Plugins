@@ -35,6 +35,18 @@ def extract(relative, class_name, names, namespace, bases=()):
     return namespace[class_name]
 
 
+def extract_optional_helpers(relative, names, namespace):
+    """新版将纯字段读取函数移到模块级；仍执行原函数，不导入宿主依赖。"""
+    file = SOURCE / relative
+    tree = ast.parse(file.read_text())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+             and n.name in names and not n.decorator_list]
+    module = ast.Module(body=[ast.ImportFrom(module="__future__",
+        names=[ast.alias(name="annotations")], level=0), *nodes], type_ignores=[])
+    ast.fix_missing_locations(module)
+    exec(compile(module, str(file), "exec"), namespace)
+
+
 class UpstreamTests(unittest.TestCase):
     def setUp(self):
         plugin = self.enterContext(load_plugin())
@@ -52,6 +64,7 @@ class UpstreamTests(unittest.TestCase):
             size_tools=SimpleNamespace(format_compact_size=str),
             time_tools=SimpleNamespace(format_duration=str), get_runtime_setting=lambda key: None,
             text_tools=SimpleNamespace(random_string=lambda size: "test-tag"),
+            torrent_rules=SimpleNamespace(download_hashes=lambda content: frozenset(("hash",))),
             _QBITTORRENT_PAUSED_STATES={"pauseddl", "pausedup", "stoppedup", "stoppeddl"},
             _QBITTORRENT_DOWNLOADING_STATES={"downloading", "stalleddl"})
         base = extract("app/modules/__init__.py", "_DownloaderBase", [
@@ -102,6 +115,27 @@ class UpstreamTests(unittest.TestCase):
         self.assertEqual(self.sent[0]["download_dir"], "E:/Downloads")
         self.module.update_torrent("hash", save_path="smb:/中文 Movie")
         self.assertEqual(self.sent[1]["location"], "E:/Downloads/中文 Movie")
+
+    def test_reviewed_contract_refresh_and_restore(self):
+        from importlib import import_module
+        compatibility = import_module(self.runtime.__package__ + ".compatibility")
+        hosts = self.adapter._resolver()
+        for host in hosts:
+            # 在新版原方法上复现旧摘要拒绝接管，确保修复没有绕过源码检查。
+            old = compatibility.BASELINE_METHOD_DIGESTS[host.downloader_type]
+            if self.runtime.source_digest(host.module_class.download) != old["download"]:
+                with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 实现不在已核对"):
+                    self.runtime.RuntimeAdapter(
+                        self.adapter.config, digests=compatibility.BASELINE_METHOD_DIGESTS)._validate(host)
+        originals = [(host.module_class, name, getattr(host.module_class, name).__wrapped__)
+                     for host in hosts for name in ("normalize_path", "normalize_return_path")]
+        self.adapter.refresh()
+        self.assertTrue(self.adapter.is_active())
+        self.adapter.stop()
+        for cls, name, original in originals:
+            self.assertIs(getattr(cls, name), original)
+        self.adapter.start()
+        self.assertTrue(self.adapter.is_active())
 
     def test_mismatched_storage_type_reports_path_before_sending_to_qb(self):
         for action in (
@@ -230,6 +264,8 @@ class UpstreamTests(unittest.TestCase):
 class TransmissionUpstreamTests(unittest.TestCase):
     """复用 qBittorrent 替身，验证同时启用两种真实模块方法。"""
 
+    test_reviewed_contract_refresh_and_restore = UpstreamTests.test_reviewed_contract_refresh_and_restore
+
     def setUp(self):
         UpstreamTests.setUp(self)
         self.adapter.stop()
@@ -241,6 +277,8 @@ class TransmissionUpstreamTests(unittest.TestCase):
         namespace = {**self.namespace, "logger": Mock(),
                      "_TRANSMISSION_PAUSED_STATES": {"stopped"},
                      "_TRANSMISSION_DOWNLOADING_STATES": {"download_pending", "downloading"}}
+        extract_optional_helpers("app/modules/transmission/__init__.py",
+                                 {"_get_torrent_attr", "_normalize_transmission_progress"}, namespace)
         self.tr_class = extract("app/modules/transmission/__init__.py", "TransmissionModule", [
             "download", "list_torrents", "update_torrent", "init_module",
             "__normalize_torrent_state"], namespace, ("_DownloaderBase",))

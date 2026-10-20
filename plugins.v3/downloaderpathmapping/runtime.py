@@ -20,7 +20,7 @@ class CompatibilityError(RuntimeError):
 
 
 def source_digest(method):
-    """忽略行号和格式变化，检测同版本内的方法实现变更。"""
+    """忽略行号和格式变化，与已核对的宿主方法实现比较。"""
     tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
     return tree_digest(tree)
 
@@ -162,17 +162,26 @@ class RuntimeAdapter:
             raise CompatibilityError(f"MoviePilot {host.version} 低于最低支持版本 {MINIMUM_VERSION}")
         if host.downloader_type not in self._digests:
             raise CompatibilityError(f"尚未适配下载器类型 {host.downloader_type}")
-        for name, digest in self._digests[host.downloader_type].items():
+        context = f"MoviePilot {host.version} / {host.downloader_type}"
+        for name, digests in self._digests[host.downloader_type].items():
             method = getattr(host.module_class, name, None)
             if getattr(method, _OWNER, None) is self:
                 method = method.__wrapped__
             elif getattr(method, _OWNER, None) is not None:
-                raise CompatibilityError(f"{name} 已由另一个下载器路径映射插件实例接管")
+                raise CompatibilityError(f"{context}：{name} 已由另一个下载器路径映射插件实例接管")
+            if not callable(method):
+                raise CompatibilityError(f"{context}：{name} 缺失或不可调用")
+            if hasattr(method, "__wrapped__"):
+                raise CompatibilityError(f"{context}：{name} 已有其他包装，拒绝接管")
             try:
-                if hasattr(method, "__wrapped__") or source_digest(method) != digest:
-                    raise CompatibilityError(f"{name} 实现已变更或已有其他包装，拒绝接管")
+                actual = source_digest(method)
             except (TypeError, OSError, IndentationError, SyntaxError) as error:
-                raise CompatibilityError(f"无法验证 {name} 的源码契约") from error
+                raise CompatibilityError(f"{context}：无法验证 {name} 的源码契约") from error
+            accepted = (digests,) if isinstance(digests, str) else digests
+            if actual not in accepted:
+                raise CompatibilityError(
+                    f"{context}：{name} 实现不在已核对的兼容列表中，拒绝接管"
+                    f"（源码摘要 {actual}）。请更新插件；若仍失败，请提供此完整错误")
         for name in ("normalize_path", "normalize_return_path"):
             method = getattr(host.module_class, name)
             parameters = list(inspect.signature(method).parameters.values())

@@ -330,6 +330,72 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(self.runtime.CompatibilityError):
             self.adapter.start()
 
+    def test_reviewed_alternative_digest_accepted_and_original_restored(self):
+        self.adapter.stop()
+        def updated(self, path, downloader):
+            return "updated-send:" + str(path)
+        self.host_class.normalize_path = updated
+        self.digests["normalize_path"] = frozenset((
+            self.digests["normalize_path"], self.runtime.source_digest(updated)))
+        self.adapter.start()
+        self.assertEqual(self.module().normalize_path(Path("smb:/"), None), "E:/Downloads")
+        self.assertEqual(self.module().normalize_path(Path("/data"), "Linux qB"),
+                         "updated-send:/data")
+        self.adapter.refresh()
+        self.adapter.stop()
+        self.assertIs(self.host_class.normalize_path, updated)
+
+    def test_unknown_download_digest_reports_host_and_does_not_install(self):
+        self.adapter.stop()
+        def download(self):
+            return "unknown implementation"
+        self.host_class.download = download
+        self.digests["download"] = frozenset(("reviewed-old", "reviewed-new"))
+        with self.assertRaises(self.runtime.CompatibilityError) as raised:
+            self.adapter.start()
+        message = str(raised.exception)
+        for value in ("v3.1.4", "qbittorrent", "download", "实现不在已核对",
+                      self.runtime.source_digest(download)):
+            self.assertIn(value, message)
+        self.assertNotIn("已有其他包装", message)
+        self.assertNotIn("normalize_path", vars(self.host_class))
+        self.assertFalse(self.adapter.is_active())
+
+    def test_wrapped_download_rejected_even_with_reviewed_source(self):
+        self.adapter.stop()
+        def download(self):
+            return "original"
+        @wraps(download)
+        def external(*args, **kwargs):
+            return download(*args, **kwargs)
+        self.host_class.download = external
+        self.digests["download"] = frozenset((self.runtime.source_digest(download),))
+        with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 已有其他包装"):
+            self.adapter.start()
+        self.assertIs(self.host_class.download, external)
+        self.assertNotIn("normalize_path", vars(self.host_class))
+
+    def test_missing_method_and_unreadable_source_have_distinct_errors(self):
+        self.adapter.stop()
+        self.digests["download"] = frozenset(("reviewed",))
+        with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 缺失或不可调用"):
+            self.adapter.start()
+        del self.digests["download"]
+        with patch.object(self.runtime, "source_digest", side_effect=OSError("源码不可读")):
+            with self.assertRaisesRegex(self.runtime.CompatibilityError, "无法验证 normalize_path 的源码契约"):
+                self.adapter.start()
+        self.assertNotIn("normalize_path", vars(self.host_class))
+
+    def test_reviewed_digest_still_requires_compatible_path_signature(self):
+        self.adapter.stop()
+        def incompatible(self, path, downloader, required):
+            return str(path)
+        self.host_class.normalize_path = incompatible
+        self.digests["normalize_path"] = frozenset((self.runtime.source_digest(incompatible),))
+        with self.assertRaisesRegex(self.runtime.CompatibilityError, "normalize_path 签名不兼容"):
+            self.adapter.start()
+        self.assertFalse(self.adapter.is_active())
+
     def test_source_digest_ignores_empty_optional_ast_fields(self):
         tree = ast.parse("def method():\n    return 1\n")
         expected = self.runtime.tree_digest(tree)
