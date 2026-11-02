@@ -18,6 +18,7 @@ Windows 输出使用正斜杠。未选择的下载器调用原方法。
 MoviePilot V3 `99ef7e508b829e81cedaf55b3aea0387baca2515`（声明版本 3.1.4），
 前端 `55c1121bfc145964ee7e826de70bec4f7f1c0f5a`；未读取用户实际镜像版本。
 0.2.5 另核对官方 3.1.4–3.1.8 发布标签，提交号记录在 `compatibility.py` 的 `REVIEWED_RELEASES`。
+0.2.6 补充核对官方 3.2.2（`c609abc782978eb81efe1da1dcf259bd3ff6e635`）。
 
 ```text
 download / update_torrent → normalize_path → qBittorrent / Transmission 客户端
@@ -63,7 +64,7 @@ POSIX `Path` 会将盘符根 `E:/` 折叠为 `E:`。仅在输入是 `Path` 且�
 保留两个转换入口的签名检查；
 `compatibility.py` 校验 `download`、`update_torrent`、`list_torrents`、`init_module`、
 `get_default_config_name`、`normalize_path`、`normalize_return_path` 七个方法的 AST 摘要，按下载器类型分别保存。
-每个方法接受一组已核对的摘要，保留原基线并收录 3.1.7–3.1.8 实现；
+每个方法接受一组已核对的摘要，保留原基线并收录 3.1.7–3.1.8、3.2.2 实现；
 3.1.4–3.1.6 的受检方法与原基线一致。版本号满足最低要求不等于跳过源码检查。
 AST 使用固定字段序列化，兼容 Python 3.12 与 3.14 的空字段差异；无法取得源码时拒绝接管。
 错误分别报告方法缺失、源码无法读取、未知源码和包装冲突，附宿主版本、下载器类型；未知源码附实际摘要。
@@ -97,6 +98,22 @@ AST 使用固定字段序列化，兼容 Python 3.12 与 3.14 的空字段差异
   共 65 项。回归覆盖旧摘要在新版 `download` 上的拒绝、新摘要启用、双向映射、刷新和卸载恢复，
   以及原 SMB 归属校验。`compileall`、`git diff --check` 通过。
 - 未取得用户实际宿主版本或完整日志，未做用户环境部署验证；未连接真实服务或发布插件。
+
+## 0.2.6 MoviePilot 3.2.2 兼容修复（2026-11-02）
+
+- 使用官方 3.2.2 源码复现用户完整报错，qBittorrent `download` 摘要为
+  `4a794461d61a932d999ffc0458fd98f7f8367db23932d952ff9d2694bcc9a307`。
+- 相比 3.1.8，两种下载器的受检 `download` 仅将“下载任务已存在”字面量改为
+  `app.schemas.download.DOWNLOAD_TASK_ALREADY_EXISTS`，常量值不变。其余六个受检方法摘要均未改变，
+  下载和位置修改仍经过 `normalize_path`，任务路径仍经过 `normalize_return_path`，转换前没有本地文件检查。
+- 补充两项官方摘要，保留旧摘要、最低版本、入口签名和包装冲突检查。同步插件、索引与项目版本为 0.2.6。
+- 隔离回归直接提取官方源码中的常量；新增两种下载器的已有任务分支验证，检查返回结果、下发目录，
+  以及 qBittorrent 临时标签清理。旧摘要拒绝检查同时覆盖 0.2.5 的实现集合。
+- 验证环境：macOS ARM64、Python 3.15.2、Node 26.5.1。67 项单元测试通过；
+  官方 3.1.4、3.1.8、3.2.2 各 15 项原方法隔离回归通过，共 45 项，无跳过项。
+  `compileall`、`git diff --check` 通过。
+- 仅下载官方源码进行审查，测试使用宿主替身，未连接真实下载器、SMB、数据库或 MoviePilot；
+  未在用户环境部署或发布插件。
 
 ## 验证
 

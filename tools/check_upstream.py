@@ -47,6 +47,16 @@ def extract_optional_helpers(relative, names, namespace):
     exec(compile(module, str(file), "exec"), namespace)
 
 
+def extract_optional_constants(relative, names, namespace):
+    """仅读取原源码中的常量字面量，不导入宿主 schema 及其依赖。"""
+    tree = ast.parse((SOURCE / relative).read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in names:
+                    namespace[target.id] = ast.literal_eval(node.value)
+
+
 class UpstreamTests(unittest.TestCase):
     def setUp(self):
         plugin = self.enterContext(load_plugin())
@@ -56,7 +66,7 @@ class UpstreamTests(unittest.TestCase):
         self.query = enum.Enum("Query", {v.upper(): v for v in
                               ("all", "completed", "paused", "transfer", "downloading")})
         self.storage = enum.Enum("Storage", {"SMB": "smb", "Local": "local"})
-        self.namespace = dict(Path=Path,
+        self.namespace = dict(Path=Path, logger=Mock(),
             ServiceConfigHelper=SimpleNamespace(get_downloader_configs=lambda: self.configs),
             StorageSchema=self.storage, TorrentQueryStatus=self.query,
             DownloadTaskState=self.query, DownloaderTorrent=lambda **kw: SimpleNamespace(**kw),
@@ -67,6 +77,8 @@ class UpstreamTests(unittest.TestCase):
             torrent_rules=SimpleNamespace(download_hashes=lambda content: frozenset(("hash",))),
             _QBITTORRENT_PAUSED_STATES={"pauseddl", "pausedup", "stoppedup", "stoppeddl"},
             _QBITTORRENT_DOWNLOADING_STATES={"downloading", "stalleddl"})
+        extract_optional_constants("app/schemas/download.py",
+                                   {"DOWNLOAD_TASK_ALREADY_EXISTS"}, self.namespace)
         base = extract("app/modules/__init__.py", "_DownloaderBase", [
             "normalize_path", "normalize_return_path", "get_default_config_name",
             "__replace_path_prefix", "__strip_storage_prefix"], self.namespace)
@@ -122,11 +134,12 @@ class UpstreamTests(unittest.TestCase):
         hosts = self.adapter._resolver()
         for host in hosts:
             # 在新版原方法上复现旧摘要拒绝接管，确保修复没有绕过源码检查。
-            old = compatibility.BASELINE_METHOD_DIGESTS[host.downloader_type]
-            if self.runtime.source_digest(host.module_class.download) != old["download"]:
-                with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 实现不在已核对"):
-                    self.runtime.RuntimeAdapter(
-                        self.adapter.config, digests=compatibility.BASELINE_METHOD_DIGESTS)._validate(host)
+            for previous in (compatibility.BASELINE_METHOD_DIGESTS, compatibility.UPDATED_METHOD_DIGESTS):
+                old = previous[host.downloader_type]
+                if self.runtime.source_digest(host.module_class.download) != old["download"]:
+                    with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 实现不在已核对"):
+                        self.runtime.RuntimeAdapter(
+                            self.adapter.config, digests=previous)._validate(host)
         originals = [(host.module_class, name, getattr(host.module_class, name).__wrapped__)
                      for host in hosts for name in ("normalize_path", "normalize_return_path")]
         self.adapter.refresh()
@@ -136,6 +149,18 @@ class UpstreamTests(unittest.TestCase):
             self.assertIs(getattr(cls, name), original)
         self.adapter.start()
         self.assertTrue(self.adapter.is_active())
+
+    def test_existing_qb_task_preserves_result_and_mapped_directory(self):
+        # 覆盖 3.2.2 实际变化的分支，常量取自上游源码。
+        server = self.servers["Windows qB"]
+        server.add_torrent = Mock(return_value=(False, []))
+        server.delete_torrents_tag = Mock(return_value=True)
+        self.module._get_torrent_info = lambda content: (SimpleNamespace(name="Movie", total_size=100), content)
+        self.rows["Windows qB"] = [{"hash": "hash", "name": "Movie", "total_size": 100, "tags": ""}]
+        result = self.module.download("magnet:?xt=urn:btih:test", Path("smb:/Movie"), "")
+        self.assertEqual(result, ("Windows qB", "hash", "Original", "下载任务已存在"))
+        self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
+        server.delete_torrents_tag.assert_called_once_with("hash", "test-tag")
 
     def test_mismatched_storage_type_reports_path_before_sending_to_qb(self):
         for action in (
@@ -369,6 +394,16 @@ class TransmissionUpstreamTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Windows TR"):
             self.tr.update_torrent("hash", downloader="Windows TR", save_path="/other")
         self.assertEqual(self.tr_sent, [])
+
+    def test_existing_transmission_task_preserves_result_and_mapped_directory(self):
+        server = self.tr_servers["Windows TR"]
+        server.add_torrent = Mock(return_value=None)
+        self.tr._get_torrent_info = lambda content: (SimpleNamespace(name="Movie", total_size=100), content)
+        self.tr_rows["Windows TR"] = [SimpleNamespace(hashString="hash", name="Movie", total_size=100, labels=[])]
+        result = self.tr.download("magnet:?xt=urn:btih:test", Path("/downloads/Movie"), "",
+                                  downloader="Windows TR")
+        self.assertEqual(result, ("Windows TR", "hash", "Original", "下载任务已存在"))
+        self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
 
 
 if __name__ == "__main__":

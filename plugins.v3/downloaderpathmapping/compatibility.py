@@ -35,6 +35,7 @@ REVIEWED_RELEASES = {
     "3.1.6": "dd4d83a00933d21772709212dc24d1b80f0e48ad",
     "3.1.7": "1f7bddc8372d7ff63d10122efb2b0873b2bfd499",
     "3.1.8": "015df3826503329f3b185847bd8a3e0b13c8559f",
+    "3.2.2": "c609abc782978eb81efe1da1dcf259bd3ff6e635",
 }
 
 UPDATED_METHOD_DIGESTS = {
@@ -63,3 +64,12 @@ METHOD_DIGESTS = {
            for name, digest in methods.items()}
     for kind, methods in BASELINE_METHOD_DIGESTS.items()
 }
+
+# 3.2.2 的 download 将“下载任务已存在”字面量提取为同值常量，
+# 两种下载器的路径调用顺序及其余受检方法与 3.1.8 一致。
+RELEASE_3_2_2_DOWNLOAD_DIGESTS = {
+    "qbittorrent": "4a794461d61a932d999ffc0458fd98f7f8367db23932d952ff9d2694bcc9a307",
+    "transmission": "37a77b3b39a56a2dca84503acf572e9615becfcd8a9582d85f5cb24a35e9e348",
+}
+for kind, digest in RELEASE_3_2_2_DOWNLOAD_DIGESTS.items():
+    METHOD_DIGESTS[kind]["download"] |= frozenset((digest,))
