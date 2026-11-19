@@ -6,6 +6,7 @@
 
 import ast
 import enum
+import inspect
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -132,9 +133,14 @@ class UpstreamTests(unittest.TestCase):
         from importlib import import_module
         compatibility = import_module(self.runtime.__package__ + ".compatibility")
         hosts = self.adapter._resolver()
+        previous_0_2_6 = {
+            kind: {**methods, "download": compatibility.RELEASE_3_2_2_DOWNLOAD_DIGESTS[kind]}
+            for kind, methods in compatibility.UPDATED_METHOD_DIGESTS.items()
+        }
         for host in hosts:
             # 在新版原方法上复现旧摘要拒绝接管，确保修复没有绕过源码检查。
-            for previous in (compatibility.BASELINE_METHOD_DIGESTS, compatibility.UPDATED_METHOD_DIGESTS):
+            for previous in (compatibility.BASELINE_METHOD_DIGESTS,
+                             compatibility.UPDATED_METHOD_DIGESTS, previous_0_2_6):
                 old = previous[host.downloader_type]
                 if self.runtime.source_digest(host.module_class.download) != old["download"]:
                     with self.assertRaisesRegex(self.runtime.CompatibilityError, "download 实现不在已核对"):
@@ -160,6 +166,35 @@ class UpstreamTests(unittest.TestCase):
         result = self.module.download("magnet:?xt=urn:btih:test", Path("smb:/Movie"), "")
         self.assertEqual(result, ("Windows qB", "hash", "Original", "下载任务已存在"))
         self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
+        server.delete_torrents_tag.assert_called_once_with("hash", "test-tag")
+
+    def test_qb_episode_selection_receives_mapped_directory(self):
+        if "episode_selection" not in inspect.signature(self.module.download).parameters:
+            self.skipTest("此宿主没有 episode_selection 参数")
+        selection = object()
+        expected = ("Windows qB", "hash", "Original", "添加下载成功")
+        self.module._finish_selected_download = Mock(return_value=expected)
+        result = self.module.download("magnet:?xt=urn:btih:test", Path("smb:/Movie"), "",
+                                      episodes={1}, custom_words="规则", episode_selection=selection)
+        self.assertEqual(result, expected)
+        self.assertEqual(self.sent[-1]["download_dir"], "E:/Downloads/Movie")
+        self.assertTrue(self.sent[-1]["is_paused"])
+        self.module._finish_selected_download.assert_called_once_with(
+            self.servers["Windows qB"], "hash", {1}, "规则", None, "Original", selection)
+
+    def test_qb_existing_task_does_not_repeat_episode_selection(self):
+        if "episode_selection" not in inspect.signature(self.module.download).parameters:
+            self.skipTest("此宿主没有新版重复任务选集语义")
+        server = self.servers["Windows qB"]
+        server.add_torrent = Mock(return_value=(False, []))
+        server.delete_torrents_tag = Mock(return_value=True)
+        self.rows["Windows qB"] = [{"hash": "hash", "name": "Movie", "tags": ""}]
+        self.module._finish_selected_download = Mock(side_effect=AssertionError("不应重新选集"))
+        result = self.module.download("magnet:?xt=urn:btih:test", Path("smb:/Movie"), "",
+                                      episodes={1}, episode_selection=object())
+        self.assertEqual(result, ("Windows qB", "hash", "Original", "下载任务已存在"))
+        self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
+        self.module._finish_selected_download.assert_not_called()
         server.delete_torrents_tag.assert_called_once_with("hash", "test-tag")
 
     def test_mismatched_storage_type_reports_path_before_sending_to_qb(self):
@@ -323,6 +358,9 @@ class TransmissionUpstreamTests(unittest.TestCase):
                 get_torrents=lambda name=name, **kw: (list(self.tr_rows[name]), False),
                 get_completed_torrents=lambda name=name, **kw: list(self.tr_rows[name]),
                 get_downloading_torrents=lambda name=name, **kw: list(self.tr_rows[name]))
+            # 新客户端返回 (任务, 是否已存在)，旧版仍使用 add_torrent。
+            server = self.tr_servers[name]
+            server.add_torrent_with_status = lambda server=server, **kw: (server.add_torrent(**kw), False)
         self.tr.get_instance = lambda name: self.tr_servers.get(name or self.tr.get_default_config_name())
         self.tr.get_instances = lambda: self.tr_servers
         self.module.get_instance = lambda name: self.servers.get(name or self.module.get_default_config_name())
@@ -404,6 +442,49 @@ class TransmissionUpstreamTests(unittest.TestCase):
                                   downloader="Windows TR")
         self.assertEqual(result, ("Windows TR", "hash", "Original", "下载任务已存在"))
         self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
+
+    def test_transmission_existing_task_does_not_repeat_episode_selection(self):
+        if "episode_selection" not in inspect.signature(self.tr.download).parameters:
+            self.skipTest("此宿主没有新版重复任务选集语义")
+        server = self.tr_servers["Windows TR"]
+        task = SimpleNamespace(hashString="hash", name="Movie", labels=[])
+        self.tr._select_download_files = Mock(side_effect=AssertionError("不应重新选集"))
+        self.tr._discard_failed_selection = Mock(side_effect=AssertionError("不应清理已有任务"))
+        # 同时覆盖 RPC 直接返回重复任务和添加失败后按哈希查找到已有任务。
+        for response in ((task, True), (None, False)):
+            with self.subTest(response=response):
+                server.add_torrent_with_status = Mock(return_value=response)
+                self.tr_rows["Windows TR"] = [task]
+                result = self.tr.download("magnet:?xt=urn:btih:test", Path("/downloads/Movie"), "",
+                                          downloader="Windows TR", episodes={1}, episode_selection=object())
+                self.assertEqual(result, ("Windows TR", "hash", "Original", "下载任务已存在"))
+                self.assertEqual(server.add_torrent_with_status.call_args.kwargs["download_dir"],
+                                 "E:/Downloads/Movie")
+                self.tr._select_download_files.assert_not_called()
+                self.tr._discard_failed_selection.assert_not_called()
+
+    def test_transmission_episode_selection_and_failure_result(self):
+        if "episode_selection" not in inspect.signature(self.tr.download).parameters:
+            self.skipTest("此宿主没有 episode_selection 参数")
+        selection = object()
+        server = self.tr_servers["Windows TR"]
+        for selected in (True, False):
+            with self.subTest(selected=selected):
+                self.tr._select_download_files = Mock(return_value=(selected, "选集失败"))
+                self.tr._discard_failed_selection = Mock(return_value="选集失败，已清理新任务")
+                result = self.tr.download("magnet:?xt=urn:btih:test", Path("/downloads/Movie"), "",
+                                          downloader="Windows TR", episodes={1}, custom_words="规则",
+                                          episode_selection=selection)
+                self.assertEqual(self.tr_sent[-1]["download_dir"], "E:/Downloads/Movie")
+                self.assertTrue(self.tr_sent[-1]["is_paused"])
+                self.tr._select_download_files.assert_called_once_with(
+                    server, "tr-hash", {1}, "规则", selection)
+                if selected:
+                    self.assertEqual(result, ("Windows TR", "tr-hash", "Original", "添加下载任务成功"))
+                    self.tr._discard_failed_selection.assert_not_called()
+                else:
+                    self.assertEqual(result, (None, None, None, "选集失败，已清理新任务"))
+                    self.tr._discard_failed_selection.assert_called_once_with(server, "tr-hash", "选集失败")
 
 
 if __name__ == "__main__":

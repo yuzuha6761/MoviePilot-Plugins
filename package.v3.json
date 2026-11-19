@@ -2,13 +2,14 @@
   "DownloaderPathMapping": {
     "name": "下载器路径映射",
     "description": "将运行在 Windows 上的下载器返回的种子路径转换为 MoviePilot 可识别的路径，并支持下载下发、修改保存位置时的反向转换。支持 qBittorrent、Transmission 多下载器和多条前缀映射。",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "icon": "https://raw.githubusercontent.com/yuzuha6761/MoviePilot-Plugins/main/icons/DownloaderPathMapping.png",
     "author": "yuzuha6761",
     "level": 1,
     "order": 50,
     "system_version": ">=3.1.4",
     "history": {
+      "v0.2.7": "修复 MoviePilot 3.2.8 调整选集与重复任务处理后导致的兼容检查失败，支持 qBittorrent 与 Transmission，保留旧版源码及包装冲突检查。",
       "v0.2.6": "修复 MoviePilot 3.2.2 将已有下载任务提示提取为常量后导致的兼容检查失败，支持 qBittorrent 与 Transmission，保留旧版源码及包装冲突检查。",
       "v0.2.5": "修复 MoviePilot 3.1.7–3.1.8 正常源码变更导致的接管失败，保留 3.1.4–3.1.6 兼容；区分源码不匹配与第三方包装冲突。",
       "v0.2.4": "默认支持 MoviePilot 3.1.4 及以上版本，运行时改为最低版本检查，保留宿主接口兼容性检查。",

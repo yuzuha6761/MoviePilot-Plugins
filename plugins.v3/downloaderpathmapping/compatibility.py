@@ -36,6 +36,7 @@ REVIEWED_RELEASES = {
     "3.1.7": "1f7bddc8372d7ff63d10122efb2b0873b2bfd499",
     "3.1.8": "015df3826503329f3b185847bd8a3e0b13c8559f",
     "3.2.2": "c609abc782978eb81efe1da1dcf259bd3ff6e635",
+    "3.2.8": "b88c7295d9a4711c87478f9d6307762c8ca73233",
 }
 
 UPDATED_METHOD_DIGESTS = {
@@ -72,4 +73,13 @@ RELEASE_3_2_2_DOWNLOAD_DIGESTS = {
     "transmission": "37a77b3b39a56a2dca84503acf572e9615becfcd8a9582d85f5cb24a35e9e348",
 }
 for kind, digest in RELEASE_3_2_2_DOWNLOAD_DIGESTS.items():
+    METHOD_DIGESTS[kind]["download"] |= frozenset((digest,))
+
+# 3.2.8 新增 episode_selection，已有任务不再重新选集；Transmission
+# 使用 add_torrent_with_status 区分重复任务。路径转换顺序及其余受检方法不变。
+RELEASE_3_2_8_DOWNLOAD_DIGESTS = {
+    "qbittorrent": "94c80af52726b5a7a1f4ef5ac38beab0ee005aa37d69b0b90e91f9d90e033f9f",
+    "transmission": "f8d5824856539b21a58b04d1261759d1ea074d67a445ca4c789f1c203a8a89a5",
+}
+for kind, digest in RELEASE_3_2_8_DOWNLOAD_DIGESTS.items():
     METHOD_DIGESTS[kind]["download"] |= frozenset((digest,))

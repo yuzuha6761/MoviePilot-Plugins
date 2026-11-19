@@ -19,6 +19,7 @@ MoviePilot V3 `99ef7e508b829e81cedaf55b3aea0387baca2515`（声明版本 3.1.4）
 前端 `55c1121bfc145964ee7e826de70bec4f7f1c0f5a`；未读取用户实际镜像版本。
 0.2.5 另核对官方 3.1.4–3.1.8 发布标签，提交号记录在 `compatibility.py` 的 `REVIEWED_RELEASES`。
 0.2.6 补充核对官方 3.2.2（`c609abc782978eb81efe1da1dcf259bd3ff6e635`）。
+0.2.7 补充核对官方 3.2.8（`b88c7295d9a4711c87478f9d6307762c8ca73233`）。
 
 ```text
 download / update_torrent → normalize_path → qBittorrent / Transmission 客户端
@@ -64,7 +65,7 @@ POSIX `Path` 会将盘符根 `E:/` 折叠为 `E:`。仅在输入是 `Path` 且�
 保留两个转换入口的签名检查；
 `compatibility.py` 校验 `download`、`update_torrent`、`list_torrents`、`init_module`、
 `get_default_config_name`、`normalize_path`、`normalize_return_path` 七个方法的 AST 摘要，按下载器类型分别保存。
-每个方法接受一组已核对的摘要，保留原基线并收录 3.1.7–3.1.8、3.2.2 实现；
+每个方法接受一组已核对的摘要，保留原基线并收录 3.1.7–3.1.8、3.2.2、3.2.8 实现；
 3.1.4–3.1.6 的受检方法与原基线一致。版本号满足最低要求不等于跳过源码检查。
 AST 使用固定字段序列化，兼容 Python 3.12 与 3.14 的空字段差异；无法取得源码时拒绝接管。
 错误分别报告方法缺失、源码无法读取、未知源码和包装冲突，附宿主版本、下载器类型；未知源码附实际摘要。
@@ -113,6 +114,25 @@ AST 使用固定字段序列化，兼容 Python 3.12 与 3.14 的空字段差异
   官方 3.1.4、3.1.8、3.2.2 各 15 项原方法隔离回归通过，共 45 项，无跳过项。
   `compileall`、`git diff --check` 通过。
 - 仅下载官方源码进行审查，测试使用宿主替身，未连接真实下载器、SMB、数据库或 MoviePilot；
+  未在用户环境部署或发布插件。
+
+## 0.2.7 MoviePilot 3.2.8 兼容修复（2026-11-19）
+
+- 使用固定提交的官方 3.2.8 源码复现用户完整报错，qBittorrent `download` 摘要为
+  `94c80af52726b5a7a1f4ef5ac38beab0ee005aa37d69b0b90e91f9d90e033f9f`。
+- 相比 3.2.2，两种下载器的 `download` 新增 `episode_selection`，已有任务不再重新选集；
+  Transmission 改用 `add_torrent_with_status` 识别 RPC 重复任务，并在新任务选集失败时调用清理方法。
+  两种下载器均在下发前调用 `normalize_path`；其余六个受检方法摘要不变，
+  返回路径仍经过 `normalize_return_path`，转换前没有对远程路径进行本地文件检查。
+- 仅增加两项已核对的下载方法摘要，保留旧摘要、最低版本、转换入口签名和包装冲突检查。
+  同步插件、索引与项目版本为 0.2.7。
+- 原方法隔离回归补充 0.2.6 摘要拒绝新版的检查，以及选集参数传递、已有任务不重新选集、
+  Transmission RPC 重复任务及选集失败结果验证。下载方法执行官方源码；客户端、选集与清理方法
+  使用替身，仅验证调用参数与返回结果，不执行真实选集或任务清理。
+- 验证环境：macOS ARM64、Python 3.15.2、Node 26.5.1。67 项单元测试通过；
+  官方 3.2.8 的 19 项原方法隔离回归全部通过；3.2.2 的 15 项回归通过，
+  另 4 项新版选集用例因旧接口不适用而跳过。`compileall`、`git diff --check` 通过。
+- 仅下载官方源码进行审查；测试不连接真实下载器、SMB、数据库或 MoviePilot。
   未在用户环境部署或发布插件。
 
 ## 验证
