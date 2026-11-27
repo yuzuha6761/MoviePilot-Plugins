@@ -7,7 +7,7 @@
 import ast
 import enum
 import inspect
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 from types import SimpleNamespace
 import unittest
@@ -20,13 +20,16 @@ from helpers import load_plugin  # noqa: E402
 SOURCE = Path(sys.argv.pop(1)).resolve()
 
 
-def extract(relative, class_name, names, namespace, bases=()):
+def extract(relative, class_name, names, namespace, bases=(), *, optional=()):
     file = SOURCE / relative
     tree = ast.parse(file.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
-    node.body = [n for n in node.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    if set(names) != {n.name for n in node.body}:
+    selected = set(names).union(optional)
+    node.body = [n for n in node.body if isinstance(n, ast.FunctionDef) and n.name in selected]
+    if not set(names).issubset(n.name for n in node.body):
         raise AssertionError(f"上游方法缺失：{class_name}")
+    if not node.body:
+        node.body = [ast.Pass()]
     node.bases = [ast.Name(id=b, ctx=ast.Load()) for b in bases]
     node.keywords = []
     module = ast.Module(body=[ast.ImportFrom(module="__future__",
@@ -62,12 +65,12 @@ class UpstreamTests(unittest.TestCase):
     def setUp(self):
         plugin = self.enterContext(load_plugin())
         self.runtime = __import__(plugin.__name__ + ".runtime", fromlist=["RuntimeAdapter"])
-        self.configs = [SimpleNamespace(name="Windows qB", default=True, path_mapping=[]),
-                        SimpleNamespace(name="Linux qB", default=False, path_mapping=[])]
+        self.configs = [SimpleNamespace(name="Windows qB", enabled=True, default=True, path_mapping=[]),
+                        SimpleNamespace(name="Linux qB", enabled=True, default=False, path_mapping=[])]
         self.query = enum.Enum("Query", {v.upper(): v for v in
                               ("all", "completed", "paused", "transfer", "downloading")})
         self.storage = enum.Enum("Storage", {"SMB": "smb", "Local": "local"})
-        self.namespace = dict(Path=Path, logger=Mock(),
+        self.namespace = dict(Path=Path, PurePosixPath=PurePosixPath, logger=Mock(),
             ServiceConfigHelper=SimpleNamespace(get_downloader_configs=lambda: self.configs),
             StorageSchema=self.storage, TorrentQueryStatus=self.query,
             DownloadTaskState=self.query, DownloaderTorrent=lambda **kw: SimpleNamespace(**kw),
@@ -80,13 +83,21 @@ class UpstreamTests(unittest.TestCase):
             _QBITTORRENT_DOWNLOADING_STATES={"downloading", "stalleddl"})
         extract_optional_constants("app/schemas/download.py",
                                    {"DOWNLOAD_TASK_ALREADY_EXISTS"}, self.namespace)
-        base = extract("app/modules/__init__.py", "_DownloaderBase", [
+        extract("app/modules/__init__.py", "_DownloaderBase", [
             "normalize_path", "normalize_return_path", "get_default_config_name",
             "__replace_path_prefix", "__strip_storage_prefix"], self.namespace)
+        self.downloader_base = ("_DownloaderBase",)
+        shared = "app/modules/_base/downloader.py"
+        if (SOURCE / shared).is_file():
+            extract(shared, "_DownloaderModuleBase", [], self.namespace, self.downloader_base,
+                    optional=("_admit_transfer_torrent", "_content_relative_paths"))
+            self.downloader_base = ("_DownloaderModuleBase",)
         self.module_class = extract("app/modules/qbittorrent/__init__.py", "QbittorrentModule", [
             "download", "list_torrents", "update_torrent", "init_module",
-            "__normalize_torrent_state"], self.namespace, ("_DownloaderBase",))
+            "__normalize_torrent_state"], self.namespace, self.downloader_base,
+            optional=("_finish_added_task", "_finish_existing_task"))
         self.module = self.module_class()
+        self.module._accept_existing_task = Mock(return_value=(True, "下载任务已存在"))
         self.module._default_config_name = None
         self.module.get_config = lambda name: next(c for c in self.configs
                                                     if c.name == (name or "Windows qB"))
@@ -182,7 +193,7 @@ class UpstreamTests(unittest.TestCase):
         self.module._finish_selected_download.assert_called_once_with(
             self.servers["Windows qB"], "hash", {1}, "规则", None, "Original", selection)
 
-    def test_qb_existing_task_does_not_repeat_episode_selection(self):
+    def test_qb_existing_task_skips_new_task_selection(self):
         if "episode_selection" not in inspect.signature(self.module.download).parameters:
             self.skipTest("此宿主没有新版重复任务选集语义")
         server = self.servers["Windows qB"]
@@ -331,8 +342,8 @@ class TransmissionUpstreamTests(unittest.TestCase):
         self.adapter.stop()
         qb_host = self.adapter._resolver()[0]
         self.configs.extend([
-            SimpleNamespace(name="Windows TR", default=False, path_mapping=[]),
-            SimpleNamespace(name="Linux TR", default=False, path_mapping=[]),
+            SimpleNamespace(name="Windows TR", enabled=True, default=False, path_mapping=[]),
+            SimpleNamespace(name="Linux TR", enabled=True, default=False, path_mapping=[]),
         ])
         namespace = {**self.namespace, "logger": Mock(),
                      "_TRANSMISSION_PAUSED_STATES": {"stopped"},
@@ -341,8 +352,9 @@ class TransmissionUpstreamTests(unittest.TestCase):
                                  {"_get_torrent_attr", "_normalize_transmission_progress"}, namespace)
         self.tr_class = extract("app/modules/transmission/__init__.py", "TransmissionModule", [
             "download", "list_torrents", "update_torrent", "init_module",
-            "__normalize_torrent_state"], namespace, ("_DownloaderBase",))
+            "__normalize_torrent_state"], namespace, self.downloader_base, optional=("_finish_existing_task",))
         self.tr = self.tr_class()
+        self.tr._accept_existing_task = Mock(return_value=(True, "下载任务已存在"))
         self.tr._default_config_name = None
         self.tr.get_config = lambda name: next(c for c in self.configs
                                                if c.name == (name or self.tr.get_default_config_name()))
@@ -405,6 +417,68 @@ class TransmissionUpstreamTests(unittest.TestCase):
             self.assertEqual(result[0], default)
             self.assertEqual(sent[-1]["download_dir"], "E:/Downloads")
 
+    def test_default_download_switches_when_previous_default_disabled(self):
+        from importlib import import_module
+        compatibility = import_module(self.runtime.__package__ + ".compatibility")
+        cached = (compatibility.QBITTORRENT_METHOD_DIGESTS, compatibility.UPDATED_METHOD_DIGESTS["qbittorrent"])
+        digest = self.runtime.source_digest(self.module_class.get_default_config_name)
+        if any(digest == methods["get_default_config_name"] for methods in cached):
+            self.skipTest("旧版默认下载器使用缓存")
+        self.assertEqual(self.module.get_default_config_name(), "Windows qB")
+        self.configs[0].enabled = False
+        self.configs[2].default = True  # Windows TR
+        self.assertIsNone(self.module.download("magnet:?xt=urn:btih:test", Path("/downloads"), ""))
+        result = self.tr.download("magnet:?xt=urn:btih:test", Path("/downloads"), "")
+        self.assertEqual(result[0], "Windows TR")
+        self.assertEqual(self.tr_sent[-1]["download_dir"], "E:/Downloads")
+
+    def test_partial_transfer_preserves_incomplete_paths_under_mapped_root(self):
+        if not hasattr(self.module, "_admit_transfer_torrent"):
+            self.skipTest("旧版整理列表没有逐文件筛选")
+        self.use_prefix("smb:/")
+        raw = r"E:\Downloads"
+        self.rows["Windows qB"] = [dict(name="Show", save_path=raw, content_path=raw + r"\Show",
+                                        hash="hash", size=10, total_size=20, state="uploading")]
+        self.tr_rows["Windows TR"] = [SimpleNamespace(
+            name="Show", download_dir=raw, labels=[], hashString="hash",
+            sizeWhenDone=10, totalSize=20, status="seeding")]
+        for module, name in ((self.module, "Windows qB"), (self.tr, "Windows TR")):
+            with self.subTest(downloader=name):
+                module._existing_task_files = Mock(return_value=[
+                    SimpleNamespace(name="Show/01.mkv", completed=True),
+                    SimpleNamespace(name=r"Show\02.mkv", completed=False),
+                ])
+                with patch.object(Path, "stat", side_effect=AssertionError("不能检查远程路径")):
+                    task, = module.list_torrents(status=self.query.TRANSFER, downloader=name)
+                self.assertEqual(task.content_path, "smb:/Show")
+                self.assertEqual(task.incomplete_files, ["02.mkv"])
+                module._existing_task_files.return_value = []
+                self.assertEqual(module.list_torrents(status=self.query.TRANSFER, downloader=name), [])
+
+    def test_existing_task_rejection_preserves_confirmation_and_mapped_directory(self):
+        if "confirmed_selection" not in inspect.signature(self.module.download).parameters:
+            self.skipTest("旧版没有已有任务受理核验")
+        qb = self.servers["Windows qB"]
+        tr = self.tr_servers["Windows TR"]
+        qb.add_torrent = Mock(return_value=(False, []))
+        self.rows["Windows qB"] = [dict(hash="hash", name="Show")]
+        tr.add_torrent_with_status = Mock(return_value=(SimpleNamespace(hashString="hash"), True))
+        selection, confirmed = object(), object()
+        for module, name, server, add in (
+            (self.module, "Windows qB", qb, qb.add_torrent),
+            (self.tr, "Windows TR", tr, tr.add_torrent_with_status),
+        ):
+            with self.subTest(downloader=name):
+                module._accept_existing_task.return_value = (False, "已有任务无法受理")
+                result = module.download(
+                    "magnet:?xt=urn:btih:test", Path("/downloads/Show"), "", downloader=name,
+                    episodes={2}, episode_selection=selection,
+                    confirmed_selection=confirmed, user_specified=True)
+                self.assertEqual(add.call_args.kwargs["download_dir"], "E:/Downloads/Show")
+                module._accept_existing_task.assert_called_once_with(
+                    server, "hash", {2}, None, selection, confirmed, name, user_specified=True)
+                self.assertEqual(result, (None, None, None, "已有任务无法受理"))
+
     def test_transmission_original_lists_all_query_modes(self):
         for raw, prefix, root in ((r"e:\DOWNLOADS", "/downloads", r"E:\Downloads"),
                                   ("E:/Downloads\\", "smb:/downloads", r"E:\Downloads"),
@@ -443,7 +517,7 @@ class TransmissionUpstreamTests(unittest.TestCase):
         self.assertEqual(result, ("Windows TR", "hash", "Original", "下载任务已存在"))
         self.assertEqual(server.add_torrent.call_args.kwargs["download_dir"], "E:/Downloads/Movie")
 
-    def test_transmission_existing_task_does_not_repeat_episode_selection(self):
+    def test_transmission_existing_task_skips_new_task_selection(self):
         if "episode_selection" not in inspect.signature(self.tr.download).parameters:
             self.skipTest("此宿主没有新版重复任务选集语义")
         server = self.tr_servers["Windows TR"]

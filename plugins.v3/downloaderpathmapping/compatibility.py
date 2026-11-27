@@ -37,6 +37,7 @@ REVIEWED_RELEASES = {
     "3.1.8": "015df3826503329f3b185847bd8a3e0b13c8559f",
     "3.2.2": "c609abc782978eb81efe1da1dcf259bd3ff6e635",
     "3.2.8": "b88c7295d9a4711c87478f9d6307762c8ca73233",
+    "3.2.14": "d644a9e904893f243d347fb266054636f68d321d",
 }
 
 UPDATED_METHOD_DIGESTS = {
@@ -83,3 +84,21 @@ RELEASE_3_2_8_DOWNLOAD_DIGESTS = {
 }
 for kind, digest in RELEASE_3_2_8_DOWNLOAD_DIGESTS.items():
     METHOD_DIGESTS[kind]["download"] |= frozenset((digest,))
+
+# 3.2.14 核验已有任务，整理时按原始路径计算未完成文件的相对路径，
+# 并从已启用配置实时选择默认下载器。两个路径转换入口仍沿用原实现。
+RELEASE_3_2_14_METHOD_DIGESTS = {
+    "qbittorrent": {
+        "download": "3c6dd5e3ec2edeb0099000c2e31a72c207db4bab0139e4b9e2dbb484dc67505f",
+        "list_torrents": "58b41920d1563b130a045df649ebd9b6c11aa158d51946b01b99ff90ec366877",
+        "get_default_config_name": "929a94fdd9d5488d7b921b2e2dccb91f73b12de9379ce44c20772229603d63ac",
+    },
+    "transmission": {
+        "download": "a6925c4893347db47ec4b85c8380ebf71d9125fbc65e581032fb8e6a475b7f60",
+        "list_torrents": "4c3caab34af557d242d7c238511e7a6bc13c01625b1dee8616893debad507285",
+        "get_default_config_name": "929a94fdd9d5488d7b921b2e2dccb91f73b12de9379ce44c20772229603d63ac",
+    },
+}
+for kind, methods in RELEASE_3_2_14_METHOD_DIGESTS.items():
+    for name, digest in methods.items():
+        METHOD_DIGESTS[kind][name] |= frozenset((digest,))
